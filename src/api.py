@@ -254,6 +254,68 @@ def _is_exec_culture_query(q: str) -> bool:
     return False
 
 
+def _is_dev_query(q: str) -> bool:
+    """Detect broad software-development asks without overfitting to a single stack."""
+
+    ql = q.lower()
+    if not ql.strip():
+        return False
+
+    direct_hits = [
+        "software developer",
+        "software engineer",
+        "software development",
+        "software dev",
+        "full stack developer",
+        "full-stack developer",
+        "full stack engineer",
+        "full-stack engineer",
+        "frontend developer",
+        "front-end developer",
+        "backend developer",
+        "back-end developer",
+        "web developer",
+        "application developer",
+        "applications developer",
+        "mobile developer",
+        "android developer",
+        "ios developer",
+        "devops engineer",
+    ]
+    if any(term in ql for term in direct_hits):
+        return True
+
+    if "developer" in ql:
+        if any(
+            ctx in ql
+            for ctx in [
+                "software",
+                "application",
+                "product",
+                "full stack",
+                "full-stack",
+                "frontend",
+                "front-end",
+                "backend",
+                "back-end",
+                "web",
+                "mobile",
+                "cloud",
+                "devops",
+                "engineering",
+                "technology",
+                "tech",
+            ]
+        ):
+            return True
+
+    if any(token in ql for token in ["programmer", "coding", "programming", "software cod"]):
+        if any(ctx in ql for ctx in ["software", "developer", "engineer", "technology", "tech"]):
+            return True
+
+    return False
+
+
 def _collect_must_include_ids(query: str, catalog_df: pd.DataFrame) -> list[int]:
     """
     Build a small 'must include' set of canonical families per intent (looked up by slug).
@@ -265,6 +327,7 @@ def _collect_must_include_ids(query: str, catalog_df: pd.DataFrame) -> list[int]
     # Use stricter exec / culture detection
     is_exec_culture = _is_exec_culture_query(query)
     is_java = ("java" in q) and any(k in q for k in ["developer", "engineer"])
+    is_dev_generic = _is_dev_query(query)
     wants_40 = ("40" in q and "min" in q) or "40 minutes" in q
     is_qa = any(
         k in q
@@ -356,6 +419,11 @@ def _collect_must_include_ids(query: str, catalog_df: pd.DataFrame) -> list[int]
         ]
         if wants_40:
             must_slug_packs += [["programming-concepts"], ["automata-fix"]]
+    elif is_dev_generic:
+        must_slug_packs += [
+            ["programming-concepts"],
+            ["core-java-entry-level", "core-java-advanced-level"],
+        ]
     if is_qa:
         must_slug_packs += [
             ["selenium"],
@@ -380,7 +448,6 @@ def _collect_must_include_ids(query: str, catalog_df: pd.DataFrame) -> list[int]
             ],
             ["sales-representative-solution", "technical-sales-associate-solution"],
             ["interpersonal-communications"],
-            ["svar-spoken-english-indian-accent"],
             ["business-communication-adaptive"],
         ]
     if is_marketing_mgr:
@@ -620,20 +687,33 @@ def _intent_keys_from_query(query: str) -> list[str]:
         )
     ):
         keys += ["sales_entry"]
-    if _match_any(
-        ql,
-        [
-            "data analyst",
-            "analytics",
-            "business analyst",
-            "tableau",
-            "power bi",
-            "excel ",
-            " sql ",
-        ],
+    if (
+        "analyst" in ql
+        or _match_any(
+            ql,
+            [
+                "analytics",
+                "business analyst",
+                "business intelligence",
+                "tableau",
+                "power bi",
+                "excel ",
+            ],
+        )
     ):
         keys += ["data_analyst"]
     if _match_any(ql, ["java developer", "java "]):
+        keys += ["java_dev"]
+    if _match_any(
+        ql,
+        [
+            "software developer",
+            "software engineer",
+            "software development",
+            "fullstack developer",
+            "full stack developer",
+        ],
+    ):
         keys += ["java_dev"]
     if _match_any(
         ql,
@@ -651,6 +731,8 @@ def _intent_keys_from_query(query: str) -> list[str]:
         keys += ["behavior"]
 
     # NEW keys / triggers
+    if _is_dev_query(query):
+        keys += ["dev_generic"]
     if any(
         k in ql
         for k in [
@@ -718,6 +800,13 @@ def _limit_intent_keys(keys: list[str], query: str) -> list[str]:
 
     archetype_groups: dict[str, list[str]] = {
         "java_dev": ["java", "developer", "engineer"],
+        "dev_generic": [
+            "software developer",
+            "software engineer",
+            "programmer",
+            "coding",
+            "programming",
+        ],
         "qa engineer": [
             "qa engineer",
             "qa ",
@@ -930,6 +1019,7 @@ def _pinned_names_for_query(q: str) -> list[list[str]]:
 
     is_exec_culture = _is_exec_culture_query(q)
     is_java = ("java" in ql) and any(k in ql for k in ["developer", "engineer"])
+    is_dev_generic = _is_dev_query(q)
     wants_40 = ("40" in ql and "min" in ql) or "40 minutes" in ql
     is_qa = any(
         k in ql
@@ -986,6 +1076,11 @@ def _pinned_names_for_query(q: str) -> list[list[str]]:
         ]
         if wants_40:
             pinned += [["programming concepts"]]
+    elif is_dev_generic:
+        pinned += [
+            ["programming concepts"],
+            ["core java entry level", "core java advanced level"],
+        ]
     if is_qa:
         pinned += [
             ["automata sql", "automata-sql", "sql server"],
@@ -1630,6 +1725,7 @@ def _post_rank_adjustments(
     is_strong_tech = (
         "technical" in query_cats and "behaviour" not in query_cats
     ) or any(k in q_lower for k in _TECH_KEYWORDS)
+    is_dev_query = _is_dev_query(query)
 
     is_content_writer = any(
         k in q_lower
@@ -1686,6 +1782,17 @@ def _post_rank_adjustments(
         ]
     )
     is_sales_grad = ("sales" in q_lower) and role == "grad"
+    is_customer_support = any(
+        k in q_lower
+        for k in [
+            "customer support",
+            "customer service",
+            "call center",
+            "contact center",
+            "voice process",
+            "international call center",
+        ]
+    )
     is_analyst = any(
         k in q_lower
         for k in [
@@ -1727,6 +1834,9 @@ def _post_rank_adjustments(
             ]
         )
     )
+    is_product_manager = ("product manager" in q_lower) or (
+        " product " in q_lower and " manager" in q_lower
+    ) or ("product management" in q_lower)
     is_presales = "presales" in q_lower or "pre-sales" in q_lower
     is_non_tech_role = (
         is_sales_grad
@@ -1738,6 +1848,95 @@ def _post_rank_adjustments(
             for k in ["admin", "administrative assistant", "bank administrative"]
         )
     )
+    pm_allows_dev = is_product_manager and any(
+        k in q_lower for k in ["coding", "developer", "programming", "hands-on", "technical"]
+    )
+    js_in_query = any(
+        term in q_lower
+        for term in ["javascript", "java script", " js ", " nodejs", " front end", "frontend"]
+    )
+    wants_stack_python_sql_js = "python" in q_lower and "sql" in q_lower and js_in_query
+    has_analytics_terms = any(
+        k in q_lower
+        for k in ["tableau", "power bi", "excel", "analytics", "business intelligence", "bi "]
+    )
+    stack_focus_no_analytics = wants_stack_python_sql_js and not has_analytics_terms
+    # Detect multi-language developer stacks (e.g., Python + SQL + JavaScript).
+    multi_lang_requested: list[str] = []
+    language_query_map = {
+        "python": ["python"],
+        "sql": [" sql ", " sql,", " sql.", "sql ", "sql,", "sql.", "sql/", "sql)", "sql(", " sql-"],
+        "javascript": [
+            "javascript",
+            "java script",
+            " nodejs",
+            " node.js",
+            " js ",
+            " js,",
+            " js.",
+            " js/",
+            " js)",
+            " js(",
+            " js-",
+        ],
+        "java": [" java ", "java,", "java.", "java/", "java-", "java)", "java("]
+    }
+    for lang, tokens in language_query_map.items():
+        if any(tok in q_lower for tok in tokens):
+            multi_lang_requested.append(lang)
+    multi_lang_requested = list(dict.fromkeys(multi_lang_requested))
+    multi_lang_focus = len(multi_lang_requested) >= 2
+    has_multi_lang_without_analytics = multi_lang_focus and not has_analytics_terms
+    presales_tool_signal = is_presales and any(
+        k in q_lower
+        for k in [
+            "canva",
+            "adobe",
+            "synthesia",
+            "presentation",
+            "presentations",
+            "proposal",
+            "proposals",
+            "demo",
+            "demos",
+            "pitch",
+            "rfp",
+            "storytelling",
+        ]
+    )
+    presales_allows_dev = is_presales and any(
+        k in q_lower
+        for k in ["developer", "engineering", "coding", "technical", "solution engineer"]
+    )
+    explicit_behaviour_request = any(
+        k in q_lower
+        for k in ["personality", "behaviour", "behavior", "culture fit", "values fit"]
+    )
+    wants_cognitive_signal = any(
+        k in q_lower for k in ["iq", "smart", "intelligent", "cognitive", "aptitude", "reasoning"]
+    )
+    wants_dev_cognitive = is_dev_query and wants_cognitive_signal
+    ai_query = any(kw in q_lower for kw in _AI_KEYWORDS)
+    long_query = len(q_lower) >= 800
+    # Shared analytics/ETL noise phrases used to dampen off-target results.
+    heavy_analytics_terms = [
+        "data warehousing",
+        "data warehouse",
+        "ssas",
+        "etl",
+        "spark",
+        "hadoop",
+        "microsoft excel 365",
+        "excel 365",
+        "appdynamics",
+        "cisco",
+    ]
+    language_candidate_map = {
+        "python": ["python"],
+        "sql": ["sql", "sql server"],
+        "javascript": ["javascript", "java script", "nodejs", "node.js", " js "],
+        "java": ["core java", " java ", " java,", " java.", " java-", " java/", " java)"]
+    }
 
     DEV_NOISE = {
         "java",
@@ -1789,6 +1988,7 @@ def _post_rank_adjustments(
 
     adjusted: List[ScoredCandidate] = []
     seen_bases: dict[str, bool] = {}
+    sales_spoken_count = 0
 
     for c in ranked:
         iid = c.item_id
@@ -1797,7 +1997,8 @@ def _post_rank_adjustments(
         except Exception:
             row = {}
 
-        score = float(c.rerank_score)
+        base_score = float(c.rerank_score)
+        score = base_score
 
         name = str(row.get("name", "") or "")
         desc = str(row.get("description", "") or "")
@@ -1886,11 +2087,13 @@ def _post_rank_adjustments(
         base = _normalize_basename(name)
         if base:
             if base in seen_bases:
-                score -= 0.05
+                if is_sales_grad or is_customer_support:
+                    score -= 0.15
+                else:
+                    score -= 0.05
             else:
                 seen_bases[base] = True
 
-        ai_query = any(kw in q_lower for kw in _AI_KEYWORDS)
         if ai_query and any(kw in name_desc for kw in _AI_KEYWORDS):
             score += 0.08
         elif ai_query:
@@ -1905,6 +2108,95 @@ def _post_rank_adjustments(
             kw in name_desc for kw in _ANALYTICS_KEYWORDS
         ):
             score += 0.12
+
+        if stack_focus_no_analytics:
+            if any(
+                kw in name_desc
+                for kw in [
+                    "javascript",
+                    "java script",
+                    "nodejs",
+                    "node.js",
+                    "front end",
+                    "frontend",
+                    "web developer",
+                    "web development",
+                ]
+            ):
+                score += 0.12
+            if any(
+                kw in name_desc
+                for kw in [
+                    "microsoft excel",
+                    "excel 365",
+                    "tableau",
+                    "power bi",
+                    "business intelligence",
+                    "ssas",
+                    "data warehouse",
+                    "data warehousing",
+                ]
+            ):
+                score -= 0.12
+            if "python" in name_desc or "programming concepts" in name_desc:
+                score += 0.06
+            if "sql" in name_desc:
+                score += 0.06
+
+        # Keep multi-language stacks aligned to the requested technologies.
+        if multi_lang_focus:
+            lang_hits = 0
+            for lang in multi_lang_requested:
+                tokens = language_candidate_map.get(lang, [])
+                if any(tok in name_desc for tok in tokens):
+                    lang_hits += 1
+            if lang_hits >= 2:
+                score += 0.12
+        if has_multi_lang_without_analytics and any(
+            kw in name_desc for kw in heavy_analytics_terms
+        ):
+            score -= 0.15
+        # For technical briefs without BI/analytics asks, push down analytics-only items.
+        if (is_dev_query or ai_query) and not has_analytics_terms and not has_multi_lang_without_analytics:
+            if any(kw in name_desc for kw in heavy_analytics_terms):
+                score -= 0.14
+        if is_dev_query and any(
+            kw in name_desc
+            for kw in [
+                "programming concepts",
+                "programming",
+                "software developer",
+                "software engineer",
+                "software development",
+                "developer assessment",
+            ]
+        ):
+            score += 0.12
+        if wants_dev_cognitive and any(
+            kw in name_desc
+            for kw in [
+                "verify numerical ability",
+                "verify verbal ability",
+                "inductive reasoning",
+                "aptitude",
+                "cognitive ability",
+                "numerical ability",
+                "verbal ability",
+            ]
+        ):
+            score += 0.10
+        if is_dev_query and not explicit_behaviour_request and any(
+            kw in name_desc
+            for kw in [
+                "occupational personality questionnaire",
+                "personality",
+                "behaviour",
+                "behavior",
+                "culture fit",
+                "values fit",
+            ]
+        ):
+            score -= 0.12
 
         query_domains: set[str] = set()
         for dom, kws in _DOMAIN_FOCUS_KEYWORDS.items():
@@ -2036,6 +2328,12 @@ def _post_rank_adjustments(
             ]
         ):
             score += 0.16
+        if is_sales_grad and (
+            "svar spoken english" in name_desc or "spoken english" in name_desc
+        ):
+            sales_spoken_count += 1
+            if not is_contact_centre and sales_spoken_count > 1:
+                score -= 0.12
 
         if any(
             k in q_lower
@@ -2113,6 +2411,49 @@ def _post_rank_adjustments(
             ):
                 score -= 0.22
 
+        if is_product_manager:
+            if any(
+                kw in name_desc
+                for kw in [
+                    "agile",
+                    "scrum",
+                    "product management",
+                    "product manager",
+                    "project management",
+                    "stakeholder",
+                    "requirements",
+                    "user story",
+                    "roadmap",
+                    "jira",
+                    "confluence",
+                    "business communication",
+                    "time management",
+                ]
+            ):
+                score += 0.14
+            if not pm_allows_dev and any(
+                kw in name_desc
+                for kw in [
+                    "automata",
+                    "developer",
+                    "programming",
+                    "java",
+                    "python",
+                    "c++",
+                    "c#",
+                    "linux",
+                    "spark",
+                    "hadoop",
+                    "spring",
+                    "hibernate",
+                ]
+            ):
+                score -= 0.14
+            if not has_analytics_terms and any(
+                kw in name_desc for kw in heavy_analytics_terms
+            ):
+                score -= 0.16
+
         if is_marketing_mgr:
             if any(
                 kw in name_desc
@@ -2154,6 +2495,49 @@ def _post_rank_adjustments(
 
         if is_non_tech_role and any(kw in name_desc for kw in DEV_NOISE):
             score -= 0.15
+
+        # Technical briefs without BI asks should not surface analytics-heavy batteries.
+        if (is_dev_query or ai_query) and not has_analytics_terms and any(
+            kw in name_desc for kw in heavy_analytics_terms
+        ):
+            score -= 0.18
+        # Reward programming-centric families so at least one dev test stays pinned.
+        if is_dev_query and any(
+            kw in name_desc
+            for kw in [
+                "programming",
+                "software developer",
+                "software engineer",
+                "software development",
+                "programming concepts",
+            ]
+        ):
+            score += 0.10
+        if wants_dev_cognitive and any(
+            kw in name_desc
+            for kw in [
+                "verify numerical ability",
+                "verify verbal ability",
+                "inductive reasoning",
+                "aptitude",
+                "cognitive ability",
+                "numerical ability",
+                "verbal ability",
+            ]
+        ):
+            score += 0.08
+        if is_dev_query and not explicit_behaviour_request and any(
+            kw in name_desc
+            for kw in [
+                "occupational personality questionnaire",
+                "personality",
+                "behaviour",
+                "behavior",
+                "culture fit",
+                "values fit",
+            ]
+        ):
+            score -= 0.12
 
         # Screening vs development/360: avoid 360/HiPo when explicitly screening applications
         if is_screening:
@@ -2204,10 +2588,19 @@ def _post_rank_adjustments(
                     "written english",
                     "writex email writing",
                     "interpersonal communications",
+                    "presentation",
+                    "presentation skills",
+                    "proposal",
+                    "customer presentation",
                 ]
             ):
                 score += 0.14
-            if any(
+            if presales_tool_signal and any(
+                kw in name_desc
+                for kw in ["presentation", "proposal", "demo", "pitch", "storytelling"]
+            ):
+                score += 0.10
+            if (not has_analytics_terms) and any(
                 kw in name_desc
                 for kw in [
                     "data warehousing",
@@ -2221,7 +2614,21 @@ def _post_rank_adjustments(
                     "analytics",
                 ]
             ):
-                score -= 0.12
+                score -= 0.16
+            if (not presales_allows_dev) and any(
+                kw in name_desc
+                for kw in [
+                    "automata",
+                    "developer",
+                    "programming",
+                    "java",
+                    "python",
+                    "linux",
+                    "spark",
+                    "data engineer",
+                ]
+            ):
+                score -= 0.14
             if any(
                 kw in name_desc
                 for kw in [
@@ -2273,6 +2680,10 @@ def _post_rank_adjustments(
                 ]
             ):
                 score -= 0.18
+
+        # Long JDs lean more on the reranker; soften heuristic deltas.
+        if long_query:
+            score = base_score + (score - base_score) * 0.6
 
         adjusted.append(
             ScoredCandidate(
@@ -2354,6 +2765,7 @@ def _apply_domain_vetoes(
     query: str, ranked_list: List[ScoredCandidate], catalog_df: pd.DataFrame
 ) -> List[ScoredCandidate]:
     ql = query.lower()
+    is_dev_query = _is_dev_query(query)
     is_consultant_io = ("consultant" in ql) and any(
         k in ql
         for k in [
@@ -2372,6 +2784,18 @@ def _apply_domain_vetoes(
     is_sales_grad = ("sales" in ql) and any(
         k in ql for k in ["entry level", "entry-level", "graduate", "fresher", "0-2"]
     )
+    is_customer_support = any(
+        k in ql
+        for k in [
+            "customer support",
+            "customer service",
+            "call center",
+            "contact center",
+            "voice process",
+            "international call center",
+        ]
+    )
+    is_presales = "presales" in ql or "pre-sales" in ql
     is_admin = any(
         k in ql
         for k in [
@@ -2386,8 +2810,50 @@ def _apply_domain_vetoes(
         for k in ["qa", "quality assurance", "selenium", "manual testing", "webdriver"]
     )
     is_fin_ops_analyst = "finance" in ql and "analyst" in ql
+    is_product_manager = ("product manager" in ql) or (
+        " product " in ql and " manager" in ql
+    ) or ("product management" in ql)
+    pm_allows_dev = is_product_manager and any(
+        k in ql for k in ["coding", "developer", "programming", "hands-on", "technical"]
+    )
+    presales_allows_dev = is_presales and any(
+        k in ql for k in ["developer", "engineering", "coding", "technical", "solution engineer"]
+    )
+    presales_mentions_analytics = any(
+        k in ql for k in ["tableau", "power bi", "excel", "analytics", "business intelligence", "bi "]
+    )
+    has_analytics_terms = presales_mentions_analytics or any(
+        k in ql for k in ["dashboard", "reporting", "data warehouse", "ssas", "etl"]
+    )
+    explicit_behaviour_request = any(
+        k in ql for k in ["personality", "behaviour", "behavior", "culture fit", "values fit"]
+    )
+    wants_cognitive_signal = any(
+        k in ql for k in ["iq", "smart", "intelligent", "cognitive", "aptitude", "reasoning"]
+    )
+    wants_dev_cognitive = is_dev_query and wants_cognitive_signal
+    ai_query = any(k in ql for k in _AI_KEYWORDS)
+    heavy_analytics_terms = [
+        "data warehousing",
+        "data warehouse",
+        "ssas",
+        "etl",
+        "spark",
+        "hadoop",
+        "microsoft excel 365",
+        "excel 365",
+        "appdynamics",
+        "cisco",
+    ]
 
-    non_tech = is_consultant_io or is_marketing_mgr or is_sales_grad or is_admin
+    non_tech = (
+        is_consultant_io
+        or is_marketing_mgr
+        or is_sales_grad
+        or is_admin
+        or is_customer_support
+        or is_presales
+    )
     dev_noise = {
         "java",
         "framework",
@@ -2398,7 +2864,18 @@ def _apply_domain_vetoes(
         "spring",
         "hibernate",
         "salesforce development",
+        "automata",
     }
+    analytics_noise = [
+        "data warehousing",
+        "data warehouse",
+        "sql server analysis services",
+        "ssas",
+        "etl",
+        "spark",
+        "hadoop",
+        "tableau",
+    ]
 
     cleaned: List[ScoredCandidate] = []
     for c in ranked_list:
@@ -2407,7 +2884,12 @@ def _apply_domain_vetoes(
         score = float(c.rerank_score)
 
         if non_tech and any(k in blob for k in dev_noise):
-            score -= 0.20
+            score -= 0.30
+
+        if (is_customer_support or is_marketing_mgr or is_sales_grad or is_admin) and any(
+            k in blob for k in analytics_noise
+        ):
+            score -= 0.30
 
         if is_consultant_io and any(
             k in blob
@@ -2443,6 +2925,84 @@ def _apply_domain_vetoes(
 
         if is_fin_ops_analyst and any(
             k in blob for k in ["data warehousing", "ssas", "etl", "spark"]
+        ):
+            score -= 0.25
+
+        if is_presales and any(
+            k in blob
+            for k in [
+                "business communication",
+                "written english",
+                "writex",
+                "interpersonal communications",
+                "presentation",
+                "proposal",
+                "demo",
+                "pitch",
+            ]
+        ):
+            score += 0.12
+        if is_presales and (not presales_mentions_analytics) and any(
+            k in blob
+            for k in [
+                "tableau",
+                "microsoft excel",
+                "power bi",
+                "ssas",
+                "data warehouse",
+                "data warehousing",
+            ]
+        ):
+            score -= 0.18
+        if is_presales and (not presales_allows_dev) and any(
+            k in blob
+            for k in [
+                "automata",
+                "developer",
+                "programming",
+                "java",
+                "python",
+                "spark",
+                "data engineer",
+                "sql server programming",
+            ]
+        ):
+            score -= 0.18
+
+        if is_product_manager and any(
+            k in blob
+            for k in [
+                "agile",
+                "scrum",
+                "product management",
+                "product manager",
+                "project management",
+                "stakeholder",
+                "requirements",
+                "user story",
+                "roadmap",
+                "jira",
+                "confluence",
+                "business communication",
+            ]
+        ):
+            score += 0.12
+        if is_product_manager and (not pm_allows_dev) and any(
+            k in blob
+            for k in [
+                "automata",
+                "developer",
+                "programming",
+                "java",
+                "python",
+                "c++",
+                "c#",
+                "linux",
+                "spark",
+                "hadoop",
+                "spring",
+                "hibernate",
+            ]
         ):
             score -= 0.18
 
