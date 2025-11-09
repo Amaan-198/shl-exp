@@ -87,3 +87,5 @@ def test_score_with_model_uses_pairs_shape():
     scores = score_with_model(model, "query", ["a", "abcd"])
     # Longer candidate text should have higher score
     assert scores[1] > scores[0]
+
+

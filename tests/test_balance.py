@@ -28,3 +28,5 @@ def test_allocate_balanced_5_5_and_dominant():
     # Case 3: ensure min 5 results if few inputs
     short = allocate([1, 2, 3], item_classes, 10, pt=0.5, pb=0.5)
     assert len(short) >= 5 or len(short) == len(set(short))
+
+

@@ -1,127 +1,179 @@
 from __future__ import annotations
-
-"""
-Maximal Marginal Relevance (MMR) diversification for search results.
-
-The MMR algorithm selects a subset of items that balances relevance
-against diversity by penalising items that are very similar to ones
-already chosen.  In the original project this requires an embedding
-matrix saved alongside the dense FAISS index.  In environments where
-the embeddings file is unavailable this module falls back to a simple
-truncation of the input list.
-"""
-
-import json
-import os
+from pathlib import Path
 from typing import List, Sequence, Tuple
+import json
+import numpy as np  # type: ignore
 
-import numpy as np
 try:
     from loguru import logger  # type: ignore
 except Exception:
     import logging
     logging.basicConfig(level=logging.INFO)
+    logger = logging.getLogger(__name__)
 
-    class _FallbackLogger:
-        def __init__(self, logger):
-            self._logger = logger
+from .config import EMBEDDINGS_PATH, IDS_MAPPING_PATH, MMR_LAMBDA
 
-        def info(self, msg: str, *args, **kwargs) -> None:
-            self._logger.info(msg.format(*args))
+# ---- process-wide caches ----
+_EMB = None
+_IDS = None
 
-        def warning(self, msg: str, *args, **kwargs) -> None:
-            self._logger.warning(msg.format(*args))
+def load_item_embeddings(
+    embeddings_path: Path = EMBEDDINGS_PATH,
+    ids_path: Path = IDS_MAPPING_PATH,
+) -> Tuple[np.ndarray, np.ndarray]:
+    """Cached load with validation + L2 normalisation."""
+    global _EMB, _IDS
+    if _EMB is not None and _IDS is not None:
+        return _EMB, _IDS
 
-        def error(self, msg: str, *args, **kwargs) -> None:
-            self._logger.error(msg.format(*args))
-
-        def exception(self, msg: str, *args, **kwargs) -> None:
-            self._logger.exception(msg.format(*args))
-
-    logger = _FallbackLogger(logging.getLogger(__name__))
-
-from .config import MMR_LAMBDA, RESULT_DEFAULT_TARGET, EMBEDDINGS_PATH, IDS_MAPPING_PATH
-
-
-def load_item_embeddings() -> tuple[np.ndarray | None, list[int]]:
-    """Load the item embedding matrix and corresponding ID map.
-
-    If the files referenced by ``EMBEDDINGS_PATH`` or ``IDS_MAPPING_PATH`` are
-    missing a ``(None, [])`` tuple is returned.  This allows the rest of
-    the pipeline to skip MMR diversification gracefully.
-    """
-    emb_path = str(EMBEDDINGS_PATH)
-    ids_path = str(IDS_MAPPING_PATH)
-    if not os.path.exists(emb_path) or not os.path.exists(ids_path):
+    if not embeddings_path.exists() or not ids_path.exists():
         logger.warning(
-            "Embedding files missing ({} or {}). Skipping MMR diversification.",
-            emb_path,
+            "Embedding or ID mapping files missing ({} / {}); using dummy zero vectors.",
+            embeddings_path,
             ids_path,
         )
-        return None, []
+        _EMB, _IDS = np.zeros((0, 1), dtype="float32"), np.array([], dtype=int)
+        return _EMB, _IDS
+
+    logger.info("Loading item embeddings from {}", embeddings_path)
     try:
-        logger.info("Loading item embeddings and ID mapping")
-        emb = np.load(emb_path, mmap_mode="r")
-        with open(ids_path, "r", encoding="utf-8") as f:
-            ids = json.load(f)
-        if emb.shape[0] != len(ids):
-            raise ValueError(
-                f"Embeddings ({emb.shape[0]}) and id map ({len(ids)}) length mismatch"
-            )
-        logger.info("Loaded embeddings: shape={}, items={}", emb.shape, len(ids))
-        return emb, ids
+        emb = np.load(embeddings_path, allow_pickle=False)
     except Exception as e:
-        logger.exception("Error loading embeddings: {}", e)
-        return None, []
+        logger.warning("Failed to load embeddings from {}: {}", embeddings_path, e)
+        _EMB, _IDS = np.zeros((0, 1), dtype="float32"), np.array([], dtype=int)
+        return _EMB, _IDS
+
+    try:
+        with ids_path.open("r", encoding="utf-8") as f:
+            raw = json.load(f)
+    except Exception as e:
+        logger.warning("Failed to load ID mapping from {}: {}", ids_path, e)
+        _EMB, _IDS = np.zeros((0, 1), dtype="float32"), np.array([], dtype=int)
+        return _EMB, _IDS
+
+    if isinstance(raw, dict):
+        try:
+            ids_list = [int(v) for k, v in sorted(raw.items(), key=lambda kv: int(kv[0]))]
+        except Exception:
+            try:
+                max_idx = max(int(k) for k in raw.keys())
+                ids_list = [int(raw[str(i)]) for i in range(max_idx + 1) if str(i) in raw]
+            except Exception:
+                ids_list = [int(v) for v in raw.values()]
+    elif isinstance(raw, list):
+        ids_list = [int(v) for v in raw]
+    else:
+        ids_list = [int(raw)]
+
+    if emb.ndim != 2:
+        raise ValueError(f"Item embeddings must be 2D (N,D). Got {emb.shape}. Rebuild the index.")
+    if emb.shape[1] <= 1:
+        raise ValueError(f"Embedding dimension {emb.shape[1]} looks wrong. Rebuild the index.")
+    if len(ids_list) != emb.shape[0]:
+        logger.warning(
+            "Embedding rows ({}) != ID rows ({}); truncating to min length.",
+            emb.shape[0], len(ids_list),
+        )
+        m = min(emb.shape[0], len(ids_list))
+        emb = emb[:m]
+        ids_list = ids_list[:m]
+    else:
+        logger.info("Loaded embeddings: shape={} items={}", emb.shape, len(ids_list))
+
+    # L2 normalise
+    norms = np.linalg.norm(emb, axis=1, keepdims=True)
+    norms[norms == 0] = 1.0
+    emb = emb / norms
+
+    _EMB = emb.astype("float32", copy=False)
+    _IDS = np.array(ids_list, dtype=int)
+    return _EMB, _IDS
 
 
 def mmr_select(
     candidates: Sequence[Tuple[int, float]],
-    embeddings: np.ndarray | None,
-    ids: list[int],
-    k: int = RESULT_DEFAULT_TARGET,
+    embeddings: np.ndarray,
+    ids: np.ndarray,
+    k: int,
     lambda_: float = MMR_LAMBDA,
 ) -> List[int]:
-    """Apply MMR to diversify a ranked list of candidates.
-
-    If ``embeddings`` is None the input candidates are truncated to
-    ``k`` items.  Otherwise the standard MMR algorithm is applied
-    using cosine similarity of the provided embedding matrix.
     """
-    if not candidates:
-        return []
-    # Fallback: if no embeddings available, return top-k by relevance
-    if embeddings is None or len(ids) == 0:
-        logger.warning("No embeddings available for MMR — returning top {} items only.", k)
-        return [cid for cid, _ in candidates[:k]]
-    # Map item_id -> embedding row index
-    id_to_index = {id_: idx for idx, id_ in enumerate(ids)}
-    # Precompute embedding vectors for these candidates
-    chosen_ids = [cid for cid, _ in candidates]
-    try:
-        vecs = np.stack([embeddings[id_to_index[cid]] for cid in chosen_ids])
-    except Exception as e:
-        logger.exception("Error retrieving embeddings for MMR: {}", e)
-        return [cid for cid, _ in candidates[:k]]
-    relevance_scores = np.array([score for _, score in candidates], dtype="float32")
-    # Cosine similarities between candidates (embeddings assumed L2 normalised)
-    sim_matrix = np.dot(vecs, vecs.T)
-    n = len(candidates)
-    selected: list[int] = []
-    unselected = list(range(n))
-    # Select first item (highest relevance)
-    selected.append(unselected.pop(0))
-    # Iteratively select items balancing relevance and novelty
-    while len(selected) < min(k, n) and unselected:
-        mmr_scores = []
-        for idx in unselected:
-            rel = relevance_scores[idx]
-            div = 0.0 if not selected else float(np.max(sim_matrix[idx, selected]))
-            mmr = lambda_ * rel - (1.0 - lambda_) * div
-            mmr_scores.append(mmr)
-        next_index = unselected[int(np.argmax(mmr_scores))]
-        selected.append(next_index)
-        unselected.remove(next_index)
-    final_ids = [chosen_ids[i] for i in selected]
-    logger.info("MMR selected {} items (λ={})", len(final_ids), lambda_)
-    return final_ids
+    Select up to ``k`` items using Maximal Marginal Relevance (MMR).
+
+    Parameters
+    ----------
+    candidates :
+        Sequence of ``(item_id, score)`` pairs, typically rerank scores.
+    embeddings :
+        Array of shape ``(n_items, dim)`` with L2‑normalised vectors.
+    ids :
+        Array of shape ``(n_items,)`` mapping row index -> item_id.
+    k :
+        Maximum number of items to return.
+    lambda_ :
+        Tradeoff between relevance and diversity.  ``1.0`` = relevance only.
+
+    Returns
+    -------
+    List[int]
+        Selected item IDs in order.
+    """
+    # If embeddings are unavailable, fall back to top-k by score
+    if embeddings.size == 0 or ids.size == 0 or not candidates:
+        return [item_id for item_id, _ in candidates[:k]]
+
+    # Build mapping from item_id -> row index
+    id_to_row = {int(item_id): idx for idx, item_id in enumerate(ids)}
+
+    # Filter candidates to those that exist in the embedding index
+    filtered: List[Tuple[int, float]] = [
+        (int(iid), float(score)) for iid, score in candidates if int(iid) in id_to_row
+    ]
+    if not filtered:
+        return [item_id for item_id, _ in candidates[:k]]
+
+    # Normalise scores into [0, 1]
+    scores = np.array([s for _, s in filtered], dtype="float32")
+    s_min, s_max = float(scores.min()), float(scores.max())
+    s_range = s_max - s_min if s_max > s_min else 1.0
+    norm_scores = (scores - s_min) / s_range
+
+    selected: List[int] = []
+    selected_vecs: List[np.ndarray] = []
+
+    while len(selected) < min(k, len(filtered)):
+        best_idx = -1
+        best_mmr = -1e9
+
+        for i, (iid, base_score) in enumerate(filtered):
+            if iid in selected:
+                continue
+
+            row = id_to_row[int(iid)]
+            vec = embeddings[row]
+
+            # Relevance component (already normalised)
+            rel = norm_scores[i]
+
+            # Diversity component: max similarity to already selected items
+            if not selected_vecs:
+                div = 0.0
+            else:
+                sims = [float(np.dot(vec, v)) for v in selected_vecs]
+                div = max(sims) if sims else 0.0
+
+            mmr_score = lambda_ * rel - (1.0 - lambda_) * div
+            if mmr_score > best_mmr:
+                best_mmr = mmr_score
+                best_idx = i
+
+        if best_idx < 0:
+            break
+
+        chosen_id = int(filtered[best_idx][0])
+        selected.append(chosen_id)
+        row = id_to_row[chosen_id]
+        selected_vecs.append(embeddings[row])
+
+    return selected
+

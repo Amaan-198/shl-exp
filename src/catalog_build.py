@@ -13,6 +13,7 @@ retrieval pipeline.
 import re
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional
+from functools import lru_cache  # NEW
 
 import pandas as pd
 try:
@@ -287,6 +288,44 @@ def build_search_text(
     return combined
 
 
+def build_search_text_with_slug(row) -> str:
+    """
+    Row-wise helper: build base search_text and append tokens derived
+    from the URL slug to improve lexical recall on assessment names.
+
+    Expects row to have at least:
+      - url
+      - name_clean
+      - description_clean
+      - test_type
+      - adaptive_support
+      - remote_support
+    """
+    base = build_search_text(
+        name=row.get("name_clean", ""),
+        description=row.get("description_clean", ""),
+        test_type=row.get("test_type", []),
+        adaptive_support=row.get("adaptive_support", ""),
+        remote_support=row.get("remote_support", ""),
+    )
+
+    url = (row.get("url") or "").strip()
+    slug_tokens = ""
+    if url:
+        # Take last path segment and de-hyphenate
+        slug = url.split("/")[-1]
+        slug_tokens = slug.replace("-", " ").lower().strip()
+
+    if slug_tokens:
+        combined = f"{base} {slug_tokens}".strip()
+    else:
+        combined = base
+
+    # Normalise whitespace just in case
+    combined = re.sub(r"\s+", " ", combined).strip()
+    return combined
+
+
 # ---------------------------
 # Catalog normalisation
 # ---------------------------
@@ -357,17 +396,8 @@ def normalise_catalog_df(df_raw: pd.DataFrame) -> pd.DataFrame:
     else:
         df["test_type"] = [[] for _ in range(len(df))]
 
-    # Build search_text
-    df["search_text"] = df.apply(
-        lambda row: build_search_text(
-            name=row["name_clean"],
-            description=row["description_clean"],
-            test_type=row["test_type"],
-            adaptive_support=row["adaptive_support"],
-            remote_support=row["remote_support"],
-        ),
-        axis=1,
-    )
+    # Build search_text using name/description/test_type/flags + URL slug tokens
+    df["search_text"] = df.apply(build_search_text_with_slug, axis=1)
 
     # Final canonical frame
     df_out = df[
@@ -426,20 +456,56 @@ def build_catalog_snapshot(
     output_path: Path = CATALOG_SNAPSHOT_PATH,
 ) -> Path:
     """
-    End-to-end: load raw catalog → normalise → write Parquet snapshot.
+    End-to-end: try to load raw Excel catalog → normalise → write Parquet snapshot.
+    If no Excel is found, fall back to crawling the SHL catalog and write the
+    snapshot directly from the crawl output.
 
     Returns the output path.
     """
-    df_raw = load_raw_catalog(raw_path)
-    df_norm = normalise_catalog_df(df_raw)
+    try:
+        # Preferred path: Excel → normalise (what we had before)
+        df_raw = load_raw_catalog(raw_path)
+        df_norm = normalise_catalog_df(df_raw)
+    except FileNotFoundError:
+        # Fallback: crawl the SHL site (Individual Test Solutions table)
+        logger.warning(
+            "No raw Excel catalog found; falling back to web crawl of SHL catalog."
+        )
+        try:
+            from .catalog_crawl import crawl_individual_test_solutions  # lazy import
+        except Exception as e:
+            logger.exception("catalog_crawl import failed: {}", e)
+            raise
 
+        df_crawl = crawl_individual_test_solutions()
+
+        # Ensure canonical schema & sequential item_id
+        # catalog_crawl already delivers the canonical columns, but we sanitize here.
+        needed = [
+            "url",
+            "name",
+            "description",
+            "duration",
+            "adaptive_support",
+            "remote_support",
+            "test_type",
+            "search_text",
+        ]
+        for col in needed:
+            if col not in df_crawl.columns:
+                df_crawl[col] = "" if col not in {"duration", "test_type"} else (0 if col == "duration" else [[]])
+
+        df_crawl = df_crawl[needed].copy()
+        df_crawl.insert(0, "item_id", range(len(df_crawl)))
+        df_norm = df_crawl
+
+    # Write snapshot
     logger.info("Writing catalog snapshot to {}", output_path)
     output_path.parent.mkdir(parents=True, exist_ok=True)
     try:
         df_norm.to_parquet(output_path, index=False)
         logger.info("Catalog snapshot written with {} rows", len(df_norm))
     except Exception as e:
-        # Fallback: write CSV if parquet engines unavailable
         logger.warning(
             "Failed to write catalog snapshot as Parquet ({}). Falling back to CSV.", e
         )
@@ -447,16 +513,21 @@ def build_catalog_snapshot(
         df_norm.to_csv(csv_path, index=False)
         logger.info("Catalog snapshot written as CSV with {} rows", len(df_norm))
         return csv_path
+
     return output_path
 
 
+@lru_cache(maxsize=1)  # NEW: cache in-process to avoid re-reading on each query
 def load_catalog_snapshot(path: Path = CATALOG_SNAPSHOT_PATH) -> pd.DataFrame:
     """
     Convenience helper to load the normalised catalog snapshot.
+    NOTE: LRU-cached so it loads once per process.
     """
     logger.info("Loading catalog snapshot from {}", path)
     try:
         df = pd.read_parquet(path)
+        if "item_id" in df.columns:
+            df = df.set_index("item_id", drop=False)
         logger.info("Loaded catalog snapshot with {} rows", len(df))
         return df
     except Exception as e:
@@ -467,6 +538,8 @@ def load_catalog_snapshot(path: Path = CATALOG_SNAPSHOT_PATH) -> pd.DataFrame:
         if not csv_path.exists():
             raise
         df = pd.read_csv(csv_path)
+        if "item_id" in df.columns:
+            df = df.set_index("item_id", drop=False)
         logger.info("Loaded catalog snapshot (CSV) with {} rows", len(df))
         return df
 

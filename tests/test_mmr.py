@@ -27,3 +27,5 @@ def test_mmr_balances_relevance_and_diversity():
     assert selected[0] == 10
     # The next chosen should not be its near-duplicate 11
     assert selected[1] in {12, 13}
+
+

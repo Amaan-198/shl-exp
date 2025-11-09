@@ -121,3 +121,4 @@ def fetch_and_extract(url: str) -> str | None:
     except Exception as e:  # pragma: no cover
         logger.warning("JD fetch exception for {}: {}", url, e)
         return None
+

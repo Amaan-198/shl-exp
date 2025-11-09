@@ -89,3 +89,5 @@ def test_normalize_catalog_basic():
     # Search text contains adaptive but not remote
     assert "adaptive" in row["search_text"]
     assert "remote" not in row["search_text"]
+
+

@@ -16,3 +16,5 @@ def test_fetch_and_extract_basic(monkeypatch):
     monkeypatch.setattr(jd_fetch.httpx.Client, "get", fake_client_get)
     text = jd_fetch.fetch_and_extract("https://example.com")
     assert "Hello" in text
+
+

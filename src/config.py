@@ -1,320 +1,325 @@
 from __future__ import annotations
-
 """
-Centralized configuration constants for the SHL recommender project.
-
-This module defines a variety of file paths, model names, and tuning
-parameters used throughout the codebase.  Keeping these values in a
-single place makes it easy to adjust defaults without hunting through
-the rest of the source.  See comments for guidance on what each
-setting controls.
+Configuration for SHL Recommender (clean, de-duplicated).
 """
 
 import os
+import re
 from pathlib import Path
 from typing import Dict, List
-
 from pydantic import BaseModel, Field
 
-
-# ---------------------------
 # Paths
-# ---------------------------
-
-# Root of the project.  Resolve relative to this file so things work
-# both when invoked as a module (python -m src.foo) and when run from
-# the repository root.
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
-
-# Directory for any data artifacts produced by the crawler or catalog
-# build pipeline.  `catalog_raw` holds the original XLSX provided by
-# SHL, `catalog_snapshot.parquet` stores a cleaned/normalized copy.
 DATA_DIR = PROJECT_ROOT / "data"
 CATALOG_RAW_DIR = DATA_DIR / "catalog_raw"
 CATALOG_SNAPSHOT_PATH = DATA_DIR / "catalog_snapshot.parquet"
 TRAIN_PATH = DATA_DIR / "gen_ai_train.xlsx"
 TEST_PATH = DATA_DIR / "gen_ai_test.xlsx"
 
-# Index artifacts.  The BM25 index is a pickle containing both the
-# underlying BM25Okapi object and the list of item IDs.  The dense
-# index consists of a FAISS index, a NumPy array of embeddings, and
-# a JSON mapping from FAISS row indices back to item IDs.
 INDICES_DIR = PROJECT_ROOT / "indices"
 BM25_INDEX_PATH = INDICES_DIR / "bm25.pkl"
 FAISS_INDEX_PATH = INDICES_DIR / "faiss.index"
 EMBEDDINGS_PATH = INDICES_DIR / "item_embeddings.npy"
 IDS_MAPPING_PATH = INDICES_DIR / "ids.json"
 
-# Optional directory to mount pre‑downloaded HF models.  When running
-# offline or in an environment with limited internet access, point
-# TRANSFORMERS_CACHE here and set HF_HUB_OFFLINE=1.
 MODELS_DIR = PROJECT_ROOT / "models"
 
-
-# ---------------------------
-# Model names (pinned)
-# ---------------------------
-
-# Dense encoder used for semantic search.  The BAAI bge‑base‑en
-# family strikes a good balance between accuracy and speed for this
-# use case.  If you change this, you should also update CHUNK_SIZE
-# and CHUNK_STRIDE in config.py to reflect the encoder's maximum
-# sequence length.
+# Models
 BGE_ENCODER_MODEL = "BAAI/bge-base-en-v1.5"
-
-# Cross‑encoder reranker used for query/document re‑scoring.  A
-# smaller model could be substituted here if runtime costs are a
-# concern; the bge‑reranker-base model is sufficiently fast for our
-# purposes.
 BGE_RERANKER_MODEL = "BAAI/bge-reranker-base"
-
-# Zero‑shot intent classifier used to determine whether a query is
-# technical (knowledge & skills) or behavioral/personality.  See
-# balance.py for how this value influences final result allocation.
 ZERO_SHOT_MODEL = "facebook/bart-large-mnli"
 
+HF_ENV_VARS = {
+    "HF_HUB_ENABLE_HF_TRANSFER": "1",
+    "TRANSFORMERS_CACHE": str(MODELS_DIR),
+    "HF_HUB_OFFLINE": os.getenv("HF_HUB_OFFLINE", "1"),
+}
 
-# ---------------------------
-# Retrieval & fusion settings
-# ---------------------------
+# Retrieval / Fusion
+BM25_WEIGHT = 0.60
+DENSE_WEIGHT = 0.40
 
-BM25_TOP_N = 200          # number of docs to retrieve from the BM25 index
-DENSE_TOP_N = 200         # number of docs to retrieve from the dense index
-FUSION_TOP_K = 60         # top‑K candidates retained after score fusion
+# IMPORTANT: retrieval should read these values (don’t hardcode in code)
+BM25_TOP_N = 300
+DENSE_TOP_N = 300
+FUSION_TOP_K = 120
 
-# Relative weight of BM25 vs dense scores.  These values are chosen
-# empirically to slightly favor BM25 for precision on short queries.
-# Default fusion weights for retrieval.  A balanced split of 0.45/0.55 is
-# recommended to slightly favour dense semantic retrieval over lexical BM25.
-BM25_WEIGHT = 0.45
-DENSE_WEIGHT = 0.55
-
-# Winsorization for fusion scores.  We clip scores into a narrow
-# range before computing z‑scores, which prevents extreme values
-# from dominating.
 FUSION_WINSORIZE_MIN = -3.0
 FUSION_WINSORIZE_MAX = 3.0
 FUSION_EPS = 1e-8
 
-# MMR diversification.  A higher lambda places more emphasis on
-# relevance and less on diversity.
-MMR_LAMBDA = 0.60
+# Diversification
+MMR_LAMBDA = 0.45
 
-
-# ---------------------------
-# Result size policy
-# ---------------------------
-
-# Minimum and maximum number of results returned by the recommend API.
+# Result policy
 RESULT_MIN = 5
 RESULT_MAX = 10
-RESULT_DEFAULT_TARGET = 10
+RESULT_DEFAULT_TARGET = 10  # soft target only
 
+# Duration tolerance used by retrieval / filtering
+# MIN: how much slack we allow around user-stated/implicit durations (minutes)
+# MAX: optional upper guard some pipelines read; keep generous.
+DURATION_TOLERANCE_MIN = 15
+DURATION_TOLERANCE_MAX = 120
 
-# ---------------------------
-# Rerank settings & env toggles
-# ---------------------------
-
-DEFAULT_RERANK_CUTOFF = 60
+# Rerank
+DEFAULT_RERANK_CUTOFF = 120
 RERANK_CUTOFF = int(os.getenv("RERANK_CUTOFF", str(DEFAULT_RERANK_CUTOFF)))
 
-# HuggingFace environment hints.  HF_HUB_ENABLE_HF_TRANSFER speeds up
-# downloads; TRANSFORMERS_CACHE points to a persistent cache; and
-# HF_HUB_OFFLINE can be set externally to force offline mode after the
-# first run.  See `_ensure_hf_env` in embed_index.py for usage.
-HF_ENV_VARS = {
-    "HF_HUB_ENABLE_HF_TRANSFER": "1",
-    "TRANSFORMERS_CACHE": str(MODELS_DIR),
-    # HF_HUB_OFFLINE may be set to "1" outside of this codebase to
-    # prevent further network calls once models are cached.
-}
-
-
-# ---------------------------
 # Text processing
-# ---------------------------
-
-# Maximum size of any text field we process.  Longer inputs will be
-# truncated to this many characters to protect against runaway
-# downloads or misconfigured endpoints.
 MAX_INPUT_CHARS = 20_000
-
-# Token budget for the encoder.  Some models can handle 768 tokens; we
-# budget for 512 to leave room for special tokens and avoid OOM.
 ENCODER_TOKEN_BUDGET = 512
-
-# When breaking long job descriptions into chunks for dense embedding,
-# we use a sliding window over tokens.  CHUNK_SIZE_TOKENS controls
-# the window size and CHUNK_STRIDE_TOKENS controls the overlap.
 CHUNK_SIZE_TOKENS = 220
 CHUNK_STRIDE_TOKENS = 110
-CHUNK_TOP_K = 3  # how many top scoring chunks to keep per JD
+CHUNK_TOP_K = 3
 
-
-# ---------------------------
-# Synonym map for lexical search
-# ---------------------------
-
-# A small, deterministic synonym map used to expand common abbreviations
-# into canonical forms before indexing.  See normalize.py for usage.
+# Synonyms / lexical normalization
 SYNONYM_MAP: Dict[str, str] = {
     "js": "javascript",
     "ts": "typescript",
     "node": "nodejs",
     "node.js": "nodejs",
     "asp.net": "aspnet",
+    "dotnet": ".net",
     "ml": "machine learning",
     "ai": "artificial intelligence",
+    "dl": "deep learning",
     "pm": "project manager",
+    "mgr": "manager",
     "stakeholder mgmt": "stakeholder management",
-
-    # --- Custom synonyms for improved lexical retrieval ---
-    # Teamwork and collaboration synonyms
-    "teamwork": "collaboration",
-    "collaboration": "teamwork",
-    "cross-functional": "collaboration",
-    "stakeholder": "client",
-    # Client-facing synonyms
-    "client-facing": "customer",
-    "customer": "client",
-    "client": "stakeholder",
-    # Communication and interpersonal skills
-    "presentation": "communication",
-    "communication": "interpersonal",
-    "interpersonal": "communication",
-    "verbal": "communication",
-    "writing": "communication",
-    "listening": "communication",
-    # Java/Spring synonyms
-    "spring boot": "springboot",
+    "coo": "chief operating officer",
+    "cxo": "executive",
     "springboot": "spring boot",
-    "spring": "spring boot",
     "java ee": "spring boot",
     "j2ee": "spring boot",
     "microservices": "spring boot",
+    "ux": "user experience",
+    "ui": "user interface",
+    "bi": "business intelligence",
+    "erp": "enterprise resource planning",
+    "sme": "subject matter expert",
+    "qa": "quality assurance",
+    "sdet": "software testing",
+    "seo": "search engine optimization",
+    "sem": "search engine marketing",
+    "content writer": "content writing",
+    "digital marketing": "marketing",
+    "assistant admin": "administrative assistant",
+    "entry-level": "entry level",
 }
 
-# Whether to augment token lists with ESCO expansion.  Disabled for
-# now; left here for future experimentation.
 ENABLE_ESCO_AUGMENT = False
 
+# Keyword families / intent markers
+_AI_KEYWORDS = [
+    "ai","artificial intelligence","machine learning","ml","deep learning",
+    "neural network","mlops","model deployment","data science","data scientist",
+    "predictive analytics","computer vision","natural language processing","nlp",
+    "generative ai","llm","chatbot","transformer model",
+]
+_PYTHON_KEYWORDS = [
+    "python","pandas","numpy","scikit-learn","sklearn","django","flask","fastapi",
+    "backend","automation","api","scripting","oop","data structures",
+]
+_ANALYTICS_KEYWORDS = [
+    "excel","power bi","tableau","data visualization","data analysis","dashboard",
+    "sql","business analytics","data modeling","reporting","sql server","data warehouse",
+    "statistics","forecasting",
+]
+_TECH_KEYWORDS = [
+    "developer","engineer","programmer","software","frontend","backend","fullstack",
+    "cloud","devops","aws","azure","gcp","linux","docker","kubernetes","network",
+    "cybersecurity","qa","testing","automation","integration","ci/cd","microservices",
+] + [
+    "cloud computing","containers","serverless","cloud security","terraform","sre",
+    "siem","pentest","incident response","iam","zero trust",
+]
 
-# ---------------------------
-# JD fetch / HTTP hardening
-# ---------------------------
+_FINANCE_KEYWORDS = [
+    "finance","accounting","tax","audit","financial analysis","valuation","budget",
+    "forecasting","treasury","banking","credit risk","financial modeling",
+]
+_BUSINESS_KEYWORDS = [
+    "business","operations","project management","strategic","planning","risk management",
+    "supply chain","procurement","marketing","branding","kpi","stakeholder management",
+    "change management","decision making",
+]
+_HR_KEYWORDS = [
+    "hr","human resources","recruitment","talent acquisition","employee engagement",
+    "conflict management","leadership","coaching","mentoring","organizational development",
+    "assessment center","psychometrics",
+]
+_SALES_KEYWORDS = [
+    "sales","retail","customer service","negotiation","communication","persuasion",
+    "telemarketing","contact center","crm","business development","account executive",
+    "sales representative","technical sales","lead generation",
+]
+_APTITUDE_KEYWORDS = [
+    "aptitude","logical reasoning","numerical reasoning","verbal reasoning","abstract reasoning",
+    "diagrammatic reasoning","cognitive","problem solving","critical thinking",
+    "inductive reasoning","deductive reasoning",
+]
+_BEHAVIOR_KEYWORDS = [
+    "leadership","teamwork","collaboration","communication","adaptability","decision making",
+    "conflict resolution","time management","resilience","interpersonal","personality",
+    "culture fit","values","opq","occupational personality questionnaire","team types",
+    "emotional intelligence","engagement",
+]
 
-# Timeout settings for httpx clients used throughout the codebase.
-# Keeping these values low prevents the crawler from hanging on slow
-# pages.
+# triggers
+BEHAVIOUR_TRIGGER_PHRASES: List[str] = [
+    "consultant","consulting","culture fit","cultural fit","right fit","values fit",
+    "io psychologist","industrial psychology","leadership role","executive role","c-suite",
+    "coo ","chief operating officer","senior leadership","people leader",
+]
+APTITUDE_TRIGGER_PHRASES: List[str] = [
+    "aptitude","reasoning test","numerical test","verbal test","inductive","deductive",
+    "cognitive ability",
+]
+COMMUNICATION_TRIGGER_PHRASES: List[str] = [
+    "communication skills","strong communication","excellent communication","written communication",
+    "verbal communication","spoken english","english comprehension","business communication",
+    "email writing","presentation skills","client communication",
+]
+
+_INTENT_KEYWORDS = {
+    "technical": _TECH_KEYWORDS + _AI_KEYWORDS + _PYTHON_KEYWORDS + _ANALYTICS_KEYWORDS,
+    "behavior": _BEHAVIOR_KEYWORDS + _HR_KEYWORDS + _SALES_KEYWORDS + _BUSINESS_KEYWORDS,
+    "aptitude": _APTITUDE_KEYWORDS,
+}
+
+# Domain markers & seeds
+_DOMAIN_MARKERS = {
+    "software_dev": _TECH_KEYWORDS + _PYTHON_KEYWORDS,
+    "ai_ml_data": _AI_KEYWORDS + _ANALYTICS_KEYWORDS,
+    "business_finance": _BUSINESS_KEYWORDS + _FINANCE_KEYWORDS,
+    "hr_leadership": _HR_KEYWORDS + _BEHAVIOR_KEYWORDS,
+    "sales_service": _SALES_KEYWORDS + ["customer success","account manager"],
+    "aptitude_reasoning": _APTITUDE_KEYWORDS,
+    "cloud_security": ["aws","azure","gcp","kubernetes","docker","terraform","siem","sre"],
+}
+DOMAIN_MARKERS = _DOMAIN_MARKERS  # public alias
+
+# ---- MAJOR retrieval boosts (new & extended) ----
+RETRIEVAL_BOOST_SEEDS: Dict[str, List[str]] = {
+    # personality / leadership staples
+    "opq": ["occupational personality questionnaire","opq32","opq32r","personality questionnaire","personality assessment"],
+    "leadership": ["leadership report","enterprise leadership","manager 8.0","managerial role","leadership styles"],
+    # communication staples
+    "communication": ["business communication","english comprehension","written english","spoken english","verbal ability","email writing"],
+    # sales staples
+    "sales": ["entry level sales","sales representative","technical sales associate","sales sift-out","inside sales"],
+    # data / sql / excel staples
+    "sql": ["sql server","database","data warehouse","ssis","ssas","ssrs"],
+    "python": ["python developer","data analyst","data analytics","machine learning","pandas","numpy"],
+    # --- NEW targeted intents ---
+    # Consultant / I-O Psychology / people science — pull OPQ & Verify batteries
+    "consultant": [
+        "occupational personality questionnaire","opq","opq32r",
+        "verify verbal ability next generation","verify numerical ability",
+        "professional 7.1 solution","administrative professional short form",
+    ],
+    "industrial organizational": [
+        "opq","opq32r","leadership report",
+        "verify verbal ability next generation","verify numerical ability",
+    ],
+    # QA / Testing
+    "quality assurance": ["automata selenium","selenium","manual testing","qa engineer","test automation","sql server","javascript","htmlcss","css3"],
+    "qa engineer": ["automata selenium","selenium","manual testing","sql server","javascript","htmlcss","css3"],
+    # Marketing / Brand / Community / Events
+    "marketing manager": ["digital advertising","writex email writing sales","business communication","manager 8.0"],
+    "brand": ["digital advertising","marketing","business communication"],
+    "community": ["digital advertising","business communication","presentation","email writing"],
+    "events": ["digital advertising","business communication","presentation"],
+}
+
+# Focused expansion library for exact families
+EXPANSION_LIBRARY: Dict[str, List[str]] = {
+    "behavior": ["opq","occupational personality questionnaire","leadership report","interpersonal communications","team types"],
+    "aptitude": ["verify verbal ability next generation","verify numerical ability","shl verify interactive inductive reasoning"],
+    "sales_entry": ["entry level sales solution","interpersonal communications","business communication adaptive","svar spoken english indian accent new"],
+    "qa_testing": ["automata selenium","selenium new","manual testing new","sql server new","javascript new","css3 new","htmlcss new"],
+    "data_analyst": ["automata sql new","python new","microsoft excel 365 new","microsoft excel 365 essentials new","tableau new","sql server analysis services (ssas) (new)"],
+    "java_dev": ["core java entry level new","core java advanced level new","java 8 new","interpersonal communications"],
+    "content_marketing": ["search engine optimization new","written english v1","english comprehension new","digital advertising new"],
+    "admin_ops": ["administrative professional short form","bank administrative assistant short form","general entry level data entry 7.0 solution","verify numerical ability","basic computer literacy windows 10 new"],
+    # --- NEW: explicit for consultant & marketing manager ---
+    "consultant_io": ["opq32r","leadership report","verify verbal ability next generation","verify numerical ability","professional 7.1 solution"],
+    "marketing_mgr": ["digital advertising","writex email writing sales","business communication adaptive","manager 8.0 jfa 4310"],
+}
+
+# SHL tokens
+_SHL_KEYWORDS = [
+    "assessment","solution","verify","professional","short form",
+    "entry level","adaptive","manager","leadership","7.0","7.1","8.0",
+    "automata","technical checking","communication","opq","biodata",
+    "motivation questionnaire","competency","simulation","situational judgment","aptitude test",
+]
+_TECH_KEYWORDS += _SHL_KEYWORDS
+_DOMAIN_MARKERS["shl_general"] = _SHL_KEYWORDS
+
+# Slug canonicalisation
+_SLUG_FAMILY_PATTERNS = [
+    (re.compile(r"-new$"), ""),
+    (re.compile(r"\(new\)$"), ""),
+    (re.compile(r"-v\d+$"), ""),
+    (re.compile(r"\(\s*v\d+\s*\)$"), ""),
+    (re.compile(r"-\d+\.\d+$"), ""),
+]
+def family_slug(slug: str) -> str:
+    if not isinstance(slug, str): return ""
+    s = slug.strip().lower().strip("/")
+    s = s.replace("%28","(").replace("%29",")").replace("_","-")
+    s = re.sub(r"-+", "-", s)
+    for pat, repl in _SLUG_FAMILY_PATTERNS: s = pat.sub(repl, s).rstrip("-").strip()
+    return s
+
+# HTTP hardening
 HTTP_CONNECT_TIMEOUT = 3.0
 HTTP_READ_TIMEOUT = 7.0
 HTTP_MAX_REDIRECTS = 2
-HTTP_MAX_BYTES = 1_000_000  # 1 MB cap on downloaded pages
+HTTP_MAX_BYTES = 1_000_000
+HTTP_USER_AGENT = "shl-rag-recommender/1.0 (+https://shl.com; contact=genai@placeholder.com)"
 
-# User‑agent string presented during HTTP requests.  Identify our
-# crawler politely and provide a contact in case of issues.
-HTTP_USER_AGENT = (
-    "shl-rag-recommender/1.0 (+https://example.com; contact=genai@placeholder.com)"
-)
-
-
-# ---------------------------
-# Zero‑shot smoothing (balance calibration)
-# ---------------------------
-
-INTENT_TEMP = 1.5        # temperature for softmax over intent logits
-INTENT_SMOOTH_EPS = 0.15  # mix with uniform prior
-INTENT_CLIP_MIN = 0.20    # floor after smoothing
-INTENT_CLIP_MAX = 0.80    # ceiling after smoothing
-
-
-# ---------------------------
-# K/P balance policy
-# ---------------------------
-
+# Zero-shot / balance
+INTENT_TEMP = 1.5
+INTENT_SMOOTH_EPS = 0.15
+INTENT_CLIP_MIN = 0.20
+INTENT_CLIP_MAX = 0.80
 INTENT_LABEL_TECHNICAL = "technical skills / knowledge"
 INTENT_LABEL_PERSONALITY = "personality / behavior"
 INTENT_LABELS: List[str] = [INTENT_LABEL_TECHNICAL, INTENT_LABEL_PERSONALITY]
-
-# Soft bonus for items whose test_type matches dominant intent.  See
-# balance.py for usage.
 INTENT_SOFT_BONUS = 0.06
 
-
-# ---------------------------
-# Crawl controls
-# ---------------------------
-
-# Maximum number of pages to crawl in the catalog.  This protects
-# against infinite pagination loops if the site changes unexpectedly.
+# Crawl / balance constants
 MAX_CATALOG_PAGES = 100
 HTTP_RETRY_READS = 1
-
-
-# Thresholds for the result allocator (see balance.py).  Kept here
-# because they are part of the public API of the recommender.
 BOTH_HIGH_THRESHOLD = 0.45
 DOMINANT_THRESHOLD = 0.60
 SECONDARY_MIN_FOR_SPLIT = 0.30
-
 BALANCE_5_5_SIZE = 10
 BALANCE_7_3_SIZE = 10
 
-
-# ---------------------------
-# Logging / observability
-# ---------------------------
-
-# Directory where logs can be written.  The API server can be
-# configured to use this, and ad‑hoc scripts will also write here.
+# Logging dir
 LOG_DIR = PROJECT_ROOT / "logs"
 LOG_DIR.mkdir(exist_ok=True)
 
-
-# ---------------------------
-# Pydantic models shared around the app
-# ---------------------------
-
+# Pydantic schemas
 class AssessmentItem(BaseModel):
-    """
-    Canonical schema for a single recommended assessment.
-
-    This matches the API contract exactly; any changes here must be
-    reflected in the OpenAPI schema exposed by src/api.py.
-    """
-
     url: str
     name: str
     description: str
     duration: int = Field(ge=0)
-    adaptive_support: str  # "Yes"/"No"
-    remote_support: str    # "Yes"/"No"
+    adaptive_support: str
+    remote_support: str
     test_type: List[str]
-
     def ensure_flags_are_literal(self) -> None:
-        """
-        Safety check: normalize adaptive/remote flags strictly to
-        uppercase literal 'Yes' or 'No'.  This can be used if
-        upstream code accidentally introduces other values.
-        """
         self.adaptive_support = "Yes" if self.adaptive_support == "Yes" else "No"
-        self.remote_support = "Yes" if self.remote_support == "Yes" else "No"
-
+        self.remote_support  = "Yes" if self.remote_support  == "Yes" else "No"
 
 class RecommendResponse(BaseModel):
-    """
-    Response body for POST /recommend.  A list of recommendations is
-    nested under the `recommended_assessments` key so additional
-    metadata could be added to the response without breaking clients.
-    """
-
     recommended_assessments: List[AssessmentItem]
 
-
 class HealthResponse(BaseModel):
-    """
-    Response body for GET /health.  Kept separate to allow future
-    extension.
-    """
-
     status: str

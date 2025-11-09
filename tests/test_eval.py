@@ -21,3 +21,5 @@ def test_mean_recall_at_k_multiple_queries():
     # q1: 1/2, q2: 1/1 -> mean = 0.75
     mr = mean_recall_at_k(gold, preds, k=2)
     assert abs(mr - 0.75) < 1e-6
+
+

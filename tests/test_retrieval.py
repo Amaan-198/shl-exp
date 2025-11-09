@@ -23,3 +23,5 @@ def test_fuse_scores_weighted_zscore_behavior():
     # Should be sorted by fused score descending
     scores = [s for _, s in fused]
     assert scores == sorted(scores, reverse=True)
+
+

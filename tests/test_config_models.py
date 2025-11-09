@@ -33,3 +33,5 @@ def test_recommend_response_structure():
 def test_health_response():
     health = HealthResponse(status="healthy")
     assert health.status == "healthy"
+
+

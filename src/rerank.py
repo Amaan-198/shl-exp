@@ -1,50 +1,68 @@
+# src/rerank.py
 from __future__ import annotations
-
-"""
-Reranking of candidate items using a cross‑encoder.
-
-After retrieving a list of candidate items via fused lexical and
-semantic search the recommender uses a cross‑encoder to compute
-fine‑grained relevance scores between the query and each candidate's
-metadata.  This module encapsulates the preparation of candidate
-texts, loading of the cross‑encoder model, and application of
-reranking.  When the ``sentence_transformers`` package is unavailable
-or models cannot be loaded the reranking gracefully falls back to
-preserving the original fused order.
-"""
 
 from dataclasses import dataclass
 from typing import List, Optional, Sequence, Tuple
 
 import numpy as np
 import pandas as pd
+from loguru import logger
+
+from . import config
+from .catalog_build import load_catalog_snapshot
+
 try:
-    from loguru import logger  # type: ignore
-except Exception:
-    import logging
-    logging.basicConfig(level=logging.INFO)
+    from sentence_transformers import CrossEncoder  # type: ignore
+except Exception as e:
+    CrossEncoder = None
+    _import_err = e
 
-    class _FallbackLogger:
-        def __init__(self, logger):
-            self._logger = logger
+# ---------------------------------------------------------------------------
+# HF model handling
+# ---------------------------------------------------------------------------
 
-        def info(self, msg: str, *args, **kwargs) -> None:
-            self._logger.info(msg.format(*args))
+RERANKER_CANDIDATES: List[str] = [
+    "BAAI/bge-reranker-base",
+    "cross-encoder/ms-marco-MiniLM-L-6-v2",
+]
 
-        def warning(self, msg: str, *args, **kwargs) -> None:
-            self._logger.warning(msg.format(*args))
+_RERANKER: Optional["CrossEncoder"] = None
+_RERANKER_IS_DUMMY: bool = False
 
-        def error(self, msg: str, *args, **kwargs) -> None:
-            self._logger.error(msg.format(*args))
 
-        def exception(self, msg: str, *args, **kwargs) -> None:
-            self._logger.exception(msg.format(*args))
+def load_reranker() -> Optional["CrossEncoder"]:
+    """
+    Load and cache a CrossEncoder. Respects HF offline cache via env.
+    """
+    global _RERANKER, _RERANKER_IS_DUMMY
 
-    logger = _FallbackLogger(logging.getLogger(__name__))
+    if _RERANKER is not None or _RERANKER_IS_DUMMY:
+        return _RERANKER
 
-from .config import RERANK_CUTOFF, BGE_RERANKER_MODEL
-from .catalog_build import load_catalog_snapshot as load_catalog_df
+    if CrossEncoder is None:
+        logger.warning("sentence_transformers not available: {}", _import_err)
+        _RERANKER_IS_DUMMY = True
+        return None
 
+    for rid in RERANKER_CANDIDATES:
+        try:
+            logger.info("Loading cross-encoder reranker: {}", rid)
+            model = CrossEncoder(rid, device="cpu")
+            _RERANKER = model
+            logger.info("Loaded cross-encoder reranker: {}", rid)
+            return _RERANKER
+        except Exception as e:
+            logger.warning("Failed to load CrossEncoder '{}': {}", rid, e)
+
+    logger.warning("No cross-encoder available; falling back to dummy reranker.")
+    _RERANKER_IS_DUMMY = True
+    _RERANKER = None
+    return None
+
+
+# ---------------------------------------------------------------------------
+# Public structures and helpers
+# ---------------------------------------------------------------------------
 
 @dataclass
 class Candidate:
@@ -54,167 +72,200 @@ class Candidate:
 
 
 def build_candidate_text(row: pd.Series) -> str:
-    """Construct a rich text representation for the cross‑encoder.
-
-    Concatenates the item name, description, test type labels and
-    flags (adaptive/remote) into a single string.  Assumes the row
-    has already been normalized by ``catalog_build``.
     """
-    name = str(row.get("name", "")).strip()
-    desc = str(row.get("description", "")).strip()
-    raw_types = row.get("test_type", [])
-    types_list: List[str] = []
-    # Normalise the test_type field into a list of strings
-    if raw_types is None or (isinstance(raw_types, float) and np.isnan(raw_types)):
-        types_list = []
-    elif isinstance(raw_types, str):
-        # Comma‑separated or repr of list; strip brackets/quotes
-        cleaned = raw_types.replace("[", "").replace("]", "").replace("'", "")
-        types_list = [t.strip() for t in cleaned.split(",") if t.strip()]
-    elif isinstance(raw_types, (list, tuple)):
-        types_list = [str(t).strip() for t in raw_types if str(t).strip()]
-    else:
-        # Try to coerce other iterables (e.g. numpy array) to list
-        try:
-            types_list = [str(t).strip() for t in list(raw_types) if str(t).strip()]
-        except Exception:
-            if pd.notnull(raw_types):
-                types_list = [str(raw_types).strip()]
-            else:
-                types_list = []
-    flags = []
-    if str(row.get("adaptive_support", "")).strip().lower() == "yes":
-        flags.append("adaptive")
-    if str(row.get("remote_support", "")).strip().lower() == "yes":
-        flags.append("remote")
-    parts: List[str] = []
-    if name:
-        parts.append(name)
-    if desc:
-        parts.append(desc)
-    if types_list:
-        parts.append(" ".join(types_list))
-    if flags:
-        parts.append(" ".join(flags))
-    return ". ".join(p for p in parts if p)
-
-
-def get_candidate_texts(item_ids: Sequence[int], catalog_df: Optional[pd.DataFrame] = None) -> List[str]:
-    """Gather the candidate text for each item ID.
-
-    If an item ID is not present in the catalog a warning is logged
-    and an empty string is returned for that position.
+    Build a text string for cross-encoder reranking.
+    Include name + description + test_type + flags for extra lexical anchors.
     """
+    name = str(row.get("name", "") or "").strip()
+    desc = str(row.get("description", "") or "").strip()
+    ttypes = row.get("test_type", [])
+    if isinstance(ttypes, str):
+        ttypes = [x.strip() for x in ttypes.split(",") if x.strip()]
+    elif not isinstance(ttypes, (list, tuple)):
+        ttypes = []
+    ttypes_str = " ".join(str(x) for x in ttypes)
+
+    adaptive = str(row.get("adaptive_support", "") or "").strip()
+    remote = str(row.get("remote_support", "") or "").strip()
+
+    bits = [name, desc]
+    if ttypes_str:
+        bits.append(f"Types: {ttypes_str}.")
+    if adaptive == "Yes":
+        bits.append("adaptive.")
+    if remote == "Yes":
+        bits.append("remote.")
+    text = " ".join(b for b in bits if b).strip()
+    return text
+
+
+def get_candidate_texts(
+    item_ids: Sequence[int],
+    catalog_df: Optional[pd.DataFrame] = None,
+) -> List[str]:
     if catalog_df is None:
-        catalog_df = load_catalog_df()
+        catalog_df = load_catalog_snapshot()
+
     texts: List[str] = []
     for iid in item_ids:
-        if iid not in catalog_df.index:
-            logger.warning("Item id {} not found in catalog; using empty text.", iid)
+        try:
+            row = catalog_df.loc[iid]
+        except Exception:
             texts.append("")
             continue
-        row = catalog_df.loc[iid]
         texts.append(build_candidate_text(row))
     return texts
 
 
-# Attempt to import CrossEncoder.  If unavailable we define a dummy
-# fallback that returns zeros and signals to the reranker that
-# reranking should be skipped.
-try:
-    from sentence_transformers import CrossEncoder as _HF_CrossEncoder
-    _CROSSENCODER_AVAILABLE = True
-except Exception:
-    _HF_CrossEncoder = None  # type: ignore
-    _CROSSENCODER_AVAILABLE = False
+def score_with_model(
+    model,
+    query: str,
+    candidate_texts: Sequence[str],
+) -> np.ndarray:
+    if not candidate_texts:
+        return np.zeros((0,), dtype="float32")
 
+    if model is None:
+        return np.zeros((len(candidate_texts),), dtype="float32")
 
-class DummyCrossEncoder:
-    """Minimal stand‑in for the HuggingFace CrossEncoder.
+    pairs = [(query, t) for t in candidate_texts]
+    try:
+        scores = model.predict(pairs)
+    except Exception as e:
+        logger.warning("Reranker model.predict failed; falling back to zeros: {}", e)
+        return np.zeros((len(candidate_texts),), dtype="float32")
 
-    Instances of this class expose a ``predict`` method returning
-    zeros.  The reranking logic checks for this class to decide
-    whether to use fused scores directly.
-    """
-
-    def __init__(self, *args, **kwargs) -> None:
-        pass
-
-    def predict(self, pairs: Sequence[Tuple[str, str]]) -> List[float]:
-        return [0.0] * len(pairs)
-
-
-def load_reranker() -> object:
-    """Load and return a cross‑encoder model or a dummy fallback."""
-    if _CROSSENCODER_AVAILABLE:
-        try:
-            return _HF_CrossEncoder(BGE_RERANKER_MODEL)
-        except Exception as e:
-            logger.warning(
-                "Failed to load CrossEncoder model '{}': {}. Using dummy reranker.",
-                BGE_RERANKER_MODEL,
-                e,
-            )
-            return DummyCrossEncoder()
-    else:
-        logger.warning("sentence_transformers not available — using dummy reranker.")
-        return DummyCrossEncoder()
-
-
-def score_with_model(model: object, query_text: str, candidate_texts: Sequence[str]) -> np.ndarray:
-    """Compute cross‑encoder scores for each candidate.
-
-    If a dummy model is supplied an empty array is returned and the
-    caller should fall back to fused scores.
-    """
-    if isinstance(model, DummyCrossEncoder):
-        # Return an empty array to signal fallback to fused scores
-        return np.asarray([], dtype="float32")
-    pairs = [(query_text, c) for c in candidate_texts]
-    scores = model.predict(pairs)
     return np.asarray(scores, dtype="float32")
 
 
+def rerank_pairs(
+    model,
+    query: str,
+    docs: List[str],
+) -> List[Tuple[int, float]]:
+    if not docs:
+        return []
+
+    if model is None:
+        # dummy: keep original order with strictly descending scores
+        base = 1.0
+        step = 1.0 / max(len(docs), 1)
+        return [(i, base - i * step) for i in range(len(docs))]
+
+    scores = score_with_model(model, query, docs)
+    ranked = sorted(
+        [(i, float(s)) for i, s in enumerate(scores)],
+        key=lambda x: -x[1],
+    )
+    return ranked
+
+
+# ---------------------------------------------------------------------------
+# Deterministic final ordering with URL tie-break
+# ---------------------------------------------------------------------------
+
+def _canon_url(u: str) -> str:
+    # minimal, dependency-free canonicalization for deterministic sort
+    return (u or "").strip().lower().rstrip("/")
+
+
+def _build_url_map(item_ids: Sequence[int], catalog_df: Optional[pd.DataFrame]) -> dict[int, str]:
+    if catalog_df is None:
+        try:
+            catalog_df = load_catalog_snapshot()
+        except Exception:
+            catalog_df = None
+
+    url_map: dict[int, str] = {}
+    if catalog_df is not None:
+        col = "url" if "url" in catalog_df.columns else None
+        if col:
+            for iid in item_ids:
+                try:
+                    url_map[int(iid)] = str(catalog_df.loc[int(iid)][col])
+                except Exception:
+                    url_map[int(iid)] = ""
+    return url_map
+
+
+# ---------------------------------------------------------------------------
+# Main entry
+# ---------------------------------------------------------------------------
+
 def rerank_candidates(
     query_text: str,
-    fused_candidates: Sequence[Tuple[int, float]],
+    fused_candidates: List[Tuple[int, float]],
     cutoff: Optional[int] = None,
-    *,
     catalog_df: Optional[pd.DataFrame] = None,
-    model: Optional[object] = None,
+    model=None,
 ) -> List[Candidate]:
-    """Apply cross‑encoder reranking to the top fused candidates.
-
-    If no cross‑encoder is available the fused scores are used as
-    rerank scores and the original order is preserved.  Otherwise
-    candidates are sorted by cross‑encoder score in descending order.
     """
-    if cutoff is None:
-        cutoff = RERANK_CUTOFF
+    High-level rerank:
+      1) take top-N fused (N=cutoff or RERANK_CUTOFF)
+      2) score with cross-encoder (or dummy)
+      3) sort by (-rerank_score, url) deterministically
+      4) backfill to RESULT_MIN..RESULT_MAX if the model returned too few
+    """
     if not fused_candidates:
         return []
-    top = list(fused_candidates)[:cutoff]
-    item_ids = [iid for iid, _ in top]
-    fused_scores = [fs for _, fs in top]
+
+    # Cutoff
+    if cutoff is None:
+        cutoff = min(config.RERANK_CUTOFF, len(fused_candidates))
+    else:
+        cutoff = min(cutoff, len(fused_candidates))
+
+    fused_top = fused_candidates[:cutoff]
+    item_ids = [int(iid) for iid, _ in fused_top]
+    fused_scores = [float(score) for _, score in fused_top]
+
+    # Load texts (and make sure catalog_df is available for URL map & safety)
     if catalog_df is None:
-        catalog_df = load_catalog_df()
+        try:
+            catalog_df = load_catalog_snapshot()
+        except Exception as e:
+            logger.warning("Failed to load catalog snapshot in rerank_candidates; proceeding without texts: {}", e)
+            catalog_df = None
+
+    if catalog_df is not None:
+        texts = get_candidate_texts(item_ids, catalog_df=catalog_df)
+    else:
+        texts = [str(iid) for iid in item_ids]
+
+    # Model
     if model is None:
         model = load_reranker()
-    candidate_texts = get_candidate_texts(item_ids, catalog_df=catalog_df)
-    logger.info("Running reranker on {} candidates (cutoff={})", len(candidate_texts), cutoff)
-    scores = score_with_model(model, query_text, candidate_texts)
-    candidates: List[Candidate] = []
-    if scores.size == 0:
-        # Fallback: use fused scores as rerank scores
-        candidates = [
-            Candidate(item_id=iid, fused_score=float(fused), rerank_score=float(fused))
-            for iid, fused in zip(item_ids, fused_scores)
-        ]
-    else:
-        candidates = [
-            Candidate(item_id=iid, fused_score=float(fused), rerank_score=float(rscore))
-            for iid, fused, rscore in zip(item_ids, fused_scores, scores)
-        ]
-    # Sort primarily by rerank score desc, secondarily by item id to stabilise ordering
-    candidates.sort(key=lambda c: (-float(c.rerank_score), c.item_id))
-    return candidates
+
+
+    # --- rerank ---
+    idx_scores = rerank_pairs(model, query_text, texts)
+
+    # Build sortable triples so ties are deterministic:
+    triples = []
+    for local_idx, score in idx_scores:
+        iid = item_ids[local_idx]
+        fused = fused_scores[local_idx]
+        # sort by: rerank_score desc, fused_score desc, item_id asc
+        triples.append((iid, float(score), float(fused)))
+
+    triples.sort(key=lambda t: (-t[1], -t[2], t[0]))
+
+    ranked: List[Candidate] = [
+        Candidate(item_id=int(iid), fused_score=float(fused), rerank_score=float(rscore))
+        for (iid, rscore, fused) in triples
+    ]
+
+
+    need = max(config.RESULT_MIN, min(config.RESULT_MAX, cutoff))
+    seen = {c.item_id for c in ranked}
+    if len(ranked) < need:
+        for iid, fused in fused_top:
+            if iid in seen:
+                continue
+            ranked.append(Candidate(item_id=int(iid), fused_score=float(fused), rerank_score=float(-1e6)))
+            seen.add(iid)
+            if len(ranked) >= need:
+                break
+
+
+    return ranked

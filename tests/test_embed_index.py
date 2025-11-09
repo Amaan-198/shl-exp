@@ -39,3 +39,5 @@ def test_build_bm25_index_writes_pickle(tmp_path):
     assert hasattr(bm25, "get_scores")
     scores = bm25.get_scores(["assessment"])
     assert len(scores) == len(texts)
+
+

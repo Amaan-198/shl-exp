@@ -32,6 +32,8 @@ number of robustness improvements:
 import re
 from typing import Dict, List
 from urllib.parse import urljoin
+import time
+import random
 
 import httpx
 import numpy as np
@@ -92,6 +94,28 @@ LEGEND_MAP: Dict[str, str] = {
 }
 
 
+def _with_backoff(fn, *args, retries: int = 3, base: float = 0.8, jitter: float = 0.4, **kwargs):
+    """
+    Run a callable with simple exponential backoff and jitter.
+    Retries on httpx.ReadTimeout/ConnectTimeout/HTTPStatusError.
+    """
+    for attempt in range(retries + 1):
+        try:
+            return fn(*args, **kwargs)
+        except httpx.HTTPError as e:
+            if attempt >= retries:
+                raise
+            sleep_for = (base * (2 ** attempt)) + random.uniform(0, jitter)
+            logger.warning("Transient HTTP error ({}). Retry {}/{} in {:.2f}s", e, attempt + 1, retries, sleep_for)
+            time.sleep(sleep_for)
+
+def _safe_get(client: httpx.Client, url: str) -> httpx.Response:
+    return _with_backoff(client.get, url, retries=2)
+
+def _safe_fetch_and_extract(url: str) -> str | None:
+    return _with_backoff(fetch_and_extract, url, retries=2)
+
+
 def _http_client() -> httpx.Client:
     """
     Construct a configured HTTP client for crawling pages.
@@ -118,7 +142,9 @@ def _fetch_html(client: httpx.Client, url: str) -> str:
     caller is expected to catch exceptions and decide whether to continue.
     """
     logger.info("Fetching catalog page: {}", url)
-    r = client.get(url)
+    #r = client.get(url)
+    r = _safe_get(client, url)
+    time.sleep(0.7)
     if r.status_code >= 400:
         raise RuntimeError(f"HTTP {r.status_code} for {url}")
     if len(r.content) > HTTP_MAX_BYTES:
@@ -329,7 +355,7 @@ def _enrich_with_product_details(rows: List[Dict]) -> None:
     for row in rows:
         url = row.get("url", "")
         try:
-            text = fetch_and_extract(url)
+            text = _safe_fetch_and_extract(url)
         except Exception as e:
             logger.warning("Failed to fetch product details for {}: {}", url, e)
             text = None
@@ -499,3 +525,4 @@ def build_catalog_snapshot_from_crawl() -> None:
 
 if __name__ == "__main__":
     build_catalog_snapshot_from_crawl()
+

@@ -1,211 +1,164 @@
+# src/eval.py
 from __future__ import annotations
 
 import argparse
-import json
+import re
 from pathlib import Path
-from typing import Dict, List, Sequence, Set
+from typing import Dict, List, Set
 
-import numpy as np
 import pandas as pd
-from loguru import logger
-from tqdm import tqdm
+from . import config
 
-from .config import TRAIN_PATH, TEST_PATH, RESULT_MAX, PROJECT_ROOT
-from .api import run_full_pipeline
+# ---------- URL → canonical family slug ----------
 
-ARTIFACTS_DIR = PROJECT_ROOT / "artifacts"
-ARTIFACTS_DIR.mkdir(exist_ok=True)
+_SLUG_RE = re.compile(r"/view/([^/?#]+)")
 
-
-# ---------------------------
-# Data loading
-# ---------------------------
-
-def load_train_df(path: Path = TRAIN_PATH) -> pd.DataFrame:
-    logger.info("Loading train data from {}", path)
-    df = pd.read_excel(path)
-    return df
-
-
-def load_test_df(path: Path = TEST_PATH) -> pd.DataFrame:
-    logger.info("Loading test data from {}", path)
-    df = pd.read_excel(path)
-    return df
-
-
-# ---------------------------
-# Gold / predictions structures
-# ---------------------------
-
-def build_gold_from_train(df: pd.DataFrame) -> Dict[str, Set[str]]:
+def _canon_slug(url: str) -> str:
     """
-    Build mapping: Query -> set of relevant Assessment_url from train sheet.
+    Convert any SHL product URL into a canonical 'family' slug so
+    variants like '-new', '(v2)', '-7.0' all match.
     """
+    if not isinstance(url, str) or not url:
+        return ""
+    u = url.strip().lower()
+    m = _SLUG_RE.search(u)
+    slug = m.group(1) if m else u
+    slug = slug.rstrip("/").replace("%28", "(").replace("%29", ")").replace("_", "-")
+    return config.family_slug(slug)
+
+# ---------- IO helpers ----------
+
+def _read_any(path: Path) -> pd.DataFrame:
+    if not path.exists():
+        raise FileNotFoundError(f"File not found: {path}")
+    ext = path.suffix.lower()
+    if ext in [".xlsx", ".xls"]:
+        df = pd.read_excel(path)
+    else:
+        df = pd.read_csv(path, encoding="utf-8")
+    cols = {c.lower(): c for c in df.columns}
+    qcol, ucol = cols.get("query"), cols.get("assessment_url")
+    if not qcol or not ucol:
+        raise ValueError(
+            f"Expected columns 'Query' and 'Assessment_url'. Found: {list(df.columns)}"
+        )
+    return df.rename(columns={qcol: "Query", ucol: "Assessment_url"})
+
+def _normalize_query_key(q: str) -> str:
+    """
+    Normalize query text so the same JD with different whitespace/newlines
+    maps to the same key.
+    """
+    q = str(q or "").strip()
+    q = re.sub(r"\s+", " ", q)
+    return q
+
+# ---------- build gold sets (by family slug) ----------
+
+def build_gold_sets(train_file: Path) -> Dict[str, Set[str]]:
+    """
+    Collapse identical logical queries into:
+        normalized_query -> {canonical_family_slugs}
+    """
+    df = _read_any(train_file)
     gold: Dict[str, Set[str]] = {}
-    if "Query" not in df.columns or "Assessment_url" not in df.columns:
-        raise ValueError("Train sheet must contain 'Query' and 'Assessment_url' columns.")
-
     for _, row in df.iterrows():
-        q = str(row["Query"]).strip()
-        url = str(row["Assessment_url"]).strip()
-        if not q or not url:
-            continue
-        if q not in gold:
-            gold[q] = set()
-        gold[q].add(url)
-
-    logger.info("Built gold labels for {} unique queries", len(gold))
+        q_key = _normalize_query_key(row["Query"])
+        slug = _canon_slug(str(row["Assessment_url"]))
+        if q_key and slug:
+            gold.setdefault(q_key, set()).add(slug)
     return gold
 
+# ---------- metrics (compare slugs) ----------
 
-def predict_for_queries(
-    queries: Sequence[str],
-    top_k: int = RESULT_MAX,
-) -> Dict[str, List[str]]:
-    """
-    Run the full recommend pipeline for each query and collect top_k URLs.
-    """
-    preds: Dict[str, List[str]] = {}
-    for q in tqdm(queries, desc="Predicting", unit="query"):
-        try:
-            resp = run_full_pipeline(q)
-            urls = [item.url for item in resp.recommended_assessments][:top_k]
-        except Exception as e:
-            logger.exception("Prediction failed for query '{}': {}", q, e)
-            urls = []
-        preds[q] = urls
-    return preds
-
-
-# ---------------------------
-# Metrics
-# ---------------------------
-
-def recall_at_k(gold: Set[str], preds: List[str], k: int) -> float:
-    """
-    Recall@k for a single query.
-    """
+def recall_at_k(gold: Set[str], pred_slugs: List[str], k: int) -> float:
     if not gold:
         return 0.0
-    top = preds[:k]
-    hits = len(gold.intersection(set(top)))
-    return hits / len(gold)
+    top = set(pred_slugs[:k])
+    hits = len(gold.intersection(top))
+    return hits / float(len(gold))
 
-
-def mean_recall_at_k(
-    gold: Dict[str, Set[str]],
+def evaluate(
     preds: Dict[str, List[str]],
-    k: int,
-) -> float:
+    gold: Dict[str, Set[str]],
+    ks=(1, 5, 10),
+) -> Dict[int, float]:
     """
-    Mean Recall@k across all queries.
+    preds: normalized query -> list of *URLs* in rank order
+    We convert to family slugs here and de-dup while preserving order.
     """
-    scores: List[float] = []
-    for q, gold_urls in gold.items():
-        p = preds.get(q, [])
-        r = recall_at_k(gold_urls, p, k)
-        scores.append(r)
-    return float(np.mean(scores)) if scores else 0.0
+    scores = {k: 0.0 for k in ks}
+    n = 0
+    for q_key, pred_urls in preds.items():
+        if q_key not in gold:
+            continue
+        # URL -> slug; de-dup keeping order
+        seen = set()
+        pred_slugs: List[str] = []
+        for u in pred_urls:
+            s = _canon_slug(u)
+            if s and s not in seen:
+                seen.add(s)
+                pred_slugs.append(s)
 
+        g = gold[q_key]
+        for k in ks:
+            scores[k] += recall_at_k(g, pred_slugs, k)
+        n += 1
+    if n == 0:
+        return {k: 0.0 for k in ks}
+    return {k: scores[k] / n for k in ks}
 
-# ---------------------------
-# Train evaluation
-# ---------------------------
+# ---------- prediction writer (train/test CSVs) ----------
 
-def evaluate_train(k: int = 10) -> float:
-    df_train = load_train_df()
-    gold = build_gold_from_train(df_train)
-    queries = list(gold.keys())
-    logger.info("Running predictions on {} train queries", len(queries))
-
-    preds = predict_for_queries(queries, top_k=k)
-    mr = mean_recall_at_k(gold, preds, k=k)
-
-    metrics = {
-        "k": k,
-        "mean_recall_at_k": mr,
-        "num_queries": len(queries),
-    }
-
-    metrics_path = ARTIFACTS_DIR / "train_metrics.json"
-    with metrics_path.open("w", encoding="utf-8") as f:
-        json.dump(metrics, f, indent=2)
-    logger.info("Train metrics written to {}: {}", metrics_path, metrics)
-
-    return mr
-
-
-# ---------------------------
-# Test predictions CSV
-# ---------------------------
-
-def make_test_predictions(
-    k: int = RESULT_MAX,
-    output_path: Path | None = None,
-) -> Path:
+def write_test_predictions(preds: Dict[str, List[str]], path: Path) -> None:
     """
-    Generate test predictions CSV with exact headers: Query,Assessment_url
+    preds: normalized_query_text -> [urls in rank order]
+    Writes CSV with exact header: Query,Assessment_url
+    (keeps incoming order; URLs are assumed already canonicalized upstream).
     """
-    df_test = load_test_df()
-    if "Query" not in df_test.columns:
-        raise ValueError("Test sheet must contain 'Query' column.")
+    rows = []
+    for q, urls in preds.items():
+        for u in urls:
+            if u:
+                rows.append({"Query": q, "Assessment_url": u})
+    df = pd.DataFrame(rows, columns=["Query", "Assessment_url"])
+    path.parent.mkdir(parents=True, exist_ok=True)
+    df.to_csv(path, index=False, encoding="utf-8")
 
-    queries = [str(q).strip() for q in df_test["Query"].unique() if str(q).strip()]
-    logger.info("Generating predictions for {} test queries", len(queries))
-
-    preds = predict_for_queries(queries, top_k=k)
-
-    rows: List[Dict[str, str]] = []
-    for q in queries:
-        urls = preds.get(q, [])
-        for url in urls:
-            rows.append(
-                {
-                    "Query": q,
-                    "Assessment_url": url,
-                }
-            )
-
-    if output_path is None:
-        output_path = ARTIFACTS_DIR / "test_predictions.csv"
-
-    df_out = pd.DataFrame(rows, columns=["Query", "Assessment_url"])
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    df_out.to_csv(output_path, index=False)
-    logger.info("Test predictions CSV written to {}", output_path)
-
-    return output_path
-
-
-# ---------------------------
-# CLI
-# ---------------------------
+# ---------- CLI ----------
 
 def main():
-    parser = argparse.ArgumentParser(description="SHL GenAI Recommender Evaluation")
-    parser.add_argument(
-        "--mode",
-        choices=["train", "test", "both"],
-        default="both",
-        help="What to run: train eval, test predictions, or both.",
-    )
-    parser.add_argument(
-        "-k",
-        type=int,
-        default=10,
-        help="Top-k cutoff (default 10).",
-    )
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--train_csv", type=Path, required=True,
+                    help="Path to training gold file (gen_ai_train.xlsx or CSV)")
+    ap.add_argument("--preds_csv", type=Path, required=True,
+                    help="Path to model predictions CSV")
+    ap.add_argument("--k", type=int, nargs="+", default=[1, 5, 10])
+    args = ap.parse_args()
 
-    args = parser.parse_args()
+    gold = build_gold_sets(args.train_csv)
 
-    if args.mode in {"train", "both"}:
-        mr = evaluate_train(k=args.k)
-        print(f"Mean Recall@{args.k} (train): {mr:.4f}")
+    dfp = _read_any(args.preds_csv)
+    # Group predictions by normalized query; keep URL order as-is
+    preds: Dict[str, List[str]] = {}
+    for q, frame in dfp.groupby("Query"):
+        q_key = _normalize_query_key(q)
+        urls = frame["Assessment_url"].astype(str).tolist()
 
-    if args.mode in {"test", "both"}:
-        out = make_test_predictions(k=args.k)
-        print(f"Test predictions written to: {out}")
+        # de-dup *by slug* while preserving rank order
+        seen = set()
+        clean_urls: List[str] = []
+        for u in urls:
+            s = _canon_slug(u)
+            if s and s not in seen:
+                seen.add(s)
+                clean_urls.append(u)
+        preds[q_key] = clean_urls
 
+    scores = evaluate(preds, gold, ks=args.k)
+    for k in args.k:
+        print(f"Recall@{k}: {scores[k]:.4f}")
 
 if __name__ == "__main__":
     main()

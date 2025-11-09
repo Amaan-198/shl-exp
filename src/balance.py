@@ -1,4 +1,6 @@
 from __future__ import annotations
+from math import ceil
+from typing import Dict, List
 
 """
 Simple allocation logic for balancing final recommendation sets.
@@ -62,96 +64,71 @@ def _looks_offdomain(name: str, desc: str) -> bool:
     return any(s in text for s in DENY_SUBSTR)
 
 
-def allocate(
-    item_ids: List[int],
-    item_classes: Dict[int, List[str]],
-    target_size: int,
-    *,
-    pt: float,
-    pb: float,
-    catalog_df=None,  # optional: for name/desc filter
-) -> List[int]:
-    """Allocate items into a final result list based on inferred intent.
-
-    ``item_ids`` should be in relevance order and may contain IDs
-    belonging to multiple classes.  ``item_classes`` maps each ID to
-    a list of test type labels.  The caller provides ``pt`` and
-    ``pb``, which are probabilities for the knowledge/skills and
-    personality/behavior intents respectively.  The algorithm
-    computes K/P targets and then fills the final list accordingly.
-
-    An off‑domain filter is applied during backfill to weed out
-    obviously irrelevant items.  If too few items remain the list is
-    padded up to ``RESULT_MIN``.  The final result is capped at
-    ``RESULT_MAX``.
+def allocate(ids: List[int], classes: Dict[int, str], target_size: int, pt: float, pb: float) -> List[int]:
     """
-    BOTH_HIGH_THRESHOLD = 0.7
-    DOMINANT_THRESHOLD = 0.75
-    SECONDARY_MIN_FOR_SPLIT = 0.35
-    # Partition IDs by class
-    k_items = [i for i in item_ids if "Knowledge & Skills" in item_classes.get(i, [])]
-    p_items = [i for i in item_ids if "Personality & Behavior" in item_classes.get(i, [])]
-    both_items = [i for i in item_ids if i in k_items and i in p_items]
-    # Dedup preserve order
-    k_items = list(dict.fromkeys(k_items))
-    p_items = list(dict.fromkeys(p_items))
-    # Determine targets based on intent probabilities
-    if pt >= BOTH_HIGH_THRESHOLD and pb >= BOTH_HIGH_THRESHOLD:
-        k_target = p_target = target_size // 2
-    elif (pt >= DOMINANT_THRESHOLD and pb >= SECONDARY_MIN_FOR_SPLIT) or (
-        pb >= DOMINANT_THRESHOLD and pt >= SECONDARY_MIN_FOR_SPLIT
-    ):
-        k_target, p_target = (7, 3) if pt > pb else (3, 7)
+    ids: MMR-ordered list of item_ids
+    classes: dict[item_id] -> "K" | "P" | "BOTH"
+    target_size: final count to return (e.g., 10)
+    pt, pb: intent proportions (technical vs behavior), 0..1
+    """
+
+    # decide split policy
+    if pt >= 0.45 and pb >= 0.45:
+        k_need, p_need = target_size // 2, target_size // 2
+    elif max(pt, pb) >= 0.60 and min(pt, pb) >= 0.30:
+        if pt >= pb:
+            k_need = ceil(0.7 * target_size)
+            p_need = target_size - k_need
+        else:
+            p_need = ceil(0.7 * target_size)
+            k_need = target_size - p_need
     else:
-        k_target = p_target = target_size // 2
-    logger.info(
-        "Alloc targets: k_target=%d, p_target=%d, (pt=%.2f, pb=%.2f)",
-        k_target,
-        p_target,
-        pt,
-        pb,
-    )
-    selected: List[int] = []
-    # Prefer BOTH early when filling buckets (it supports both intents)
-    for i in both_items:
-        if len([x for x in selected if x in k_items]) >= k_target and len(
-            [x for x in selected if x in p_items]
-        ) >= p_target:
+        if pt >= pb:
+            k_need, p_need = target_size, 0
+        else:
+            k_need, p_need = 0, target_size
+
+    # split pools
+    k_pool, p_pool, both_pool = [], [], []
+    for i in ids:
+        cls = classes.get(i, "K")
+        if cls == "K":
+            k_pool.append(i)
+        elif cls == "P":
+            p_pool.append(i)
+        else:
+            both_pool.append(i)
+
+    picked: List[int] = []
+
+    def take(pool: List[int], need: int):
+        out = pool[:max(0, need)]
+        rem = pool[len(out):]
+        need_left = max(0, need - len(out))
+        return out, rem, need_left
+
+    # fill K (prefers K, then BOTH)
+    out, k_pool, k_need = take(k_pool, k_need)
+    picked += out
+    if k_need > 0:
+        out, both_pool, k_need = take(both_pool, k_need)
+        picked += out
+
+    # fill P (prefers P, then BOTH)
+    out, p_pool, p_need = take(p_pool, p_need)
+    picked += out
+    if p_need > 0:
+        out, both_pool, p_need = take(both_pool, p_need)
+        picked += out
+
+    # backfill to target_size using remaining MMR order
+    seen = set(picked)
+    for i in ids:
+        if len(picked) >= target_size:
             break
-        if i not in selected:
-            selected.append(i)
-    # Fill K then P
-    for i in k_items:
-        if len([x for x in selected if x in k_items]) >= k_target:
-            break
-        if i not in selected:
-            selected.append(i)
-    for i in p_items:
-        if len([x for x in selected if x in p_items]) >= p_target:
-            break
-        if i not in selected:
-            selected.append(i)
-    # Backfill from remaining, but skip obvious off‑domain if we have catalog_df
-    def _ok(i: int) -> bool:
-        if catalog_df is None:
-            return True
-        if i not in catalog_df.index:
-            return True
-        row = catalog_df.loc[i]
-        return not _looks_offdomain(str(row.get("name", "")), str(row.get("description", "")))
-    for i in item_ids:
-        if len(selected) >= target_size:
-            break
-        if i not in selected and _ok(i):
-            selected.append(i)
-    # Still short? allow anything to meet minimum
-    if len(selected) < RESULT_MIN:
-        for i in item_ids:
-            if len(selected) >= RESULT_MIN:
-                break
-            if i not in selected:
-                selected.append(i)
-    # Trim to maximum
-    if len(selected) > RESULT_MAX:
-        selected = selected[:RESULT_MAX]
-    return selected
+        if i not in seen:
+            picked.append(i)
+            seen.add(i)
+
+    return picked
+

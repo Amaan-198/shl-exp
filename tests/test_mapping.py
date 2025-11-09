@@ -41,3 +41,5 @@ def test_map_items_to_response_structure(tmp_path):
     assert isinstance(resp, RecommendResponse)
     assert len(resp.recommended_assessments) == 2
     assert all(item.url.startswith("https") for item in resp.recommended_assessments)
+
+

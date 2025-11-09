@@ -48,3 +48,5 @@ def test_recommend_returns_5_to_10_items(monkeypatch):
     data = resp.json()
     assert "recommended_assessments" in data
     assert 5 <= len(data["recommended_assessments"]) <= 10
+
+

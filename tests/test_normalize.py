@@ -67,3 +67,5 @@ def test_clamp_text_length():
     text = "x" * (MAX_INPUT_CHARS + 100)
     clamped = clamp_text_length(text)
     assert len(clamped) == MAX_INPUT_CHARS
+
+

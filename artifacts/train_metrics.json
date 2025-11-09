@@ -1,0 +1,6 @@
+{
+  "k": 10,
+  "mean_recall_at_k": 0.02,
+  "num_queries": 10
+}
+

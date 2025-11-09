@@ -10,3 +10,5 @@ export TRANSFORMERS_CACHE=./models
 
 echo "[run_server] Starting API server on http://0.0.0.0:8000 ..."
 uvicorn src.api:app --host 0.0.0.0 --port 8000
+
+
