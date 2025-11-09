@@ -707,6 +707,17 @@ def _intent_keys_from_query(query: str) -> list[str]:
     if _match_any(
         ql,
         [
+            "software developer",
+            "software engineer",
+            "software development",
+            "fullstack developer",
+            "full stack developer",
+        ],
+    ):
+        keys += ["java_dev"]
+    if _match_any(
+        ql,
+        [
             "coo",
             "chief operating officer",
             "culture fit",
@@ -1771,6 +1782,17 @@ def _post_rank_adjustments(
         ]
     )
     is_sales_grad = ("sales" in q_lower) and role == "grad"
+    is_customer_support = any(
+        k in q_lower
+        for k in [
+            "customer support",
+            "customer service",
+            "call center",
+            "contact center",
+            "voice process",
+            "international call center",
+        ]
+    )
     is_analyst = any(
         k in q_lower
         for k in [
@@ -2065,7 +2087,10 @@ def _post_rank_adjustments(
         base = _normalize_basename(name)
         if base:
             if base in seen_bases:
-                score -= 0.05
+                if is_sales_grad or is_customer_support:
+                    score -= 0.15
+                else:
+                    score -= 0.05
             else:
                 seen_bases[base] = True
 
@@ -2759,6 +2784,17 @@ def _apply_domain_vetoes(
     is_sales_grad = ("sales" in ql) and any(
         k in ql for k in ["entry level", "entry-level", "graduate", "fresher", "0-2"]
     )
+    is_customer_support = any(
+        k in ql
+        for k in [
+            "customer support",
+            "customer service",
+            "call center",
+            "contact center",
+            "voice process",
+            "international call center",
+        ]
+    )
     is_presales = "presales" in ql or "pre-sales" in ql
     is_admin = any(
         k in ql
@@ -2811,7 +2847,12 @@ def _apply_domain_vetoes(
     ]
 
     non_tech = (
-        is_consultant_io or is_marketing_mgr or is_sales_grad or is_admin or is_presales
+        is_consultant_io
+        or is_marketing_mgr
+        or is_sales_grad
+        or is_admin
+        or is_customer_support
+        or is_presales
     )
     dev_noise = {
         "java",
@@ -2825,6 +2866,16 @@ def _apply_domain_vetoes(
         "salesforce development",
         "automata",
     }
+    analytics_noise = [
+        "data warehousing",
+        "data warehouse",
+        "sql server analysis services",
+        "ssas",
+        "etl",
+        "spark",
+        "hadoop",
+        "tableau",
+    ]
 
     cleaned: List[ScoredCandidate] = []
     for c in ranked_list:
@@ -2833,7 +2884,12 @@ def _apply_domain_vetoes(
         score = float(c.rerank_score)
 
         if non_tech and any(k in blob for k in dev_noise):
-            score -= 0.20
+            score -= 0.30
+
+        if (is_customer_support or is_marketing_mgr or is_sales_grad or is_admin) and any(
+            k in blob for k in analytics_noise
+        ):
+            score -= 0.30
 
         if is_consultant_io and any(
             k in blob
@@ -2869,6 +2925,84 @@ def _apply_domain_vetoes(
 
         if is_fin_ops_analyst and any(
             k in blob for k in ["data warehousing", "ssas", "etl", "spark"]
+        ):
+            score -= 0.25
+
+        if is_presales and any(
+            k in blob
+            for k in [
+                "business communication",
+                "written english",
+                "writex",
+                "interpersonal communications",
+                "presentation",
+                "proposal",
+                "demo",
+                "pitch",
+            ]
+        ):
+            score += 0.12
+        if is_presales and (not presales_mentions_analytics) and any(
+            k in blob
+            for k in [
+                "tableau",
+                "microsoft excel",
+                "power bi",
+                "ssas",
+                "data warehouse",
+                "data warehousing",
+            ]
+        ):
+            score -= 0.18
+        if is_presales and (not presales_allows_dev) and any(
+            k in blob
+            for k in [
+                "automata",
+                "developer",
+                "programming",
+                "java",
+                "python",
+                "spark",
+                "data engineer",
+                "sql server programming",
+            ]
+        ):
+            score -= 0.18
+
+        if is_product_manager and any(
+            k in blob
+            for k in [
+                "agile",
+                "scrum",
+                "product management",
+                "product manager",
+                "project management",
+                "stakeholder",
+                "requirements",
+                "user story",
+                "roadmap",
+                "jira",
+                "confluence",
+                "business communication",
+            ]
+        ):
+            score += 0.12
+        if is_product_manager and (not pm_allows_dev) and any(
+            k in blob
+            for k in [
+                "automata",
+                "developer",
+                "programming",
+                "java",
+                "python",
+                "c++",
+                "c#",
+                "linux",
+                "spark",
+                "hadoop",
+                "spring",
+                "hibernate",
+            ]
         ):
             score -= 0.18
 
