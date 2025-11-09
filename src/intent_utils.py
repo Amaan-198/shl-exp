@@ -1,3 +1,5 @@
+"""Reusable helpers for deriving intent keys from free-form queries."""
+
 from __future__ import annotations
 
 from typing import List
