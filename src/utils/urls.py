@@ -1,6 +1,6 @@
 # src/utils/urls.py
-from urllib.parse import urlparse
 from __future__ import annotations
+from urllib.parse import urlparse
 import re
 from typing import Iterable, List
 from .. import config
@@ -47,14 +47,16 @@ def canon_url(u: str) -> str:
 def canon_urls(urls):
     return [canon_url(u) for u in (urls or [])]
 
+
 def _slug(u: str) -> str:
     if not isinstance(u, str) or not u:
         return ""
     u = u.strip().lower()
     m = _SLUG_RE.search(u)
     slug = m.group(1) if m else u
-    slug = slug.rstrip("/").replace("%28","(").replace("%29",")").replace("_","-")
+    slug = slug.rstrip("/").replace("%28", "(").replace("%29", ")").replace("_", "-")
     return config.family_slug(slug)
+
 
 def canon_urls(urls: Iterable[str]) -> List[str]:
     """

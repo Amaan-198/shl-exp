@@ -1,4 +1,6 @@
 # src/cli.py
+from __future__ import annotations
+
 """
 Batch runner for SHL GenAI recommender.
 Generates train/test prediction CSVs without starting FastAPI.
@@ -10,7 +12,7 @@ Improvements:
 - Deterministic URL post-processing (canonicalise + de-dup, stable order)
 """
 
-from __future__ import annotations
+
 import argparse
 import os
 from collections import defaultdict
@@ -33,7 +35,7 @@ def _set_hf_env_once():
 
 def _warmup_indices():
     try:
-        _ = load_bm25()              # cache BM25
+        _ = load_bm25()  # cache BM25
         _ = load_dense_components()  # cache dense components (model/index/map)
     except Exception:
         # not fatal; proceed
@@ -46,7 +48,9 @@ def load_queries(path: Path) -> List[str]:
     cols = {c.lower(): c for c in df.columns}
     qcol = cols.get("query")
     if not qcol:
-        raise ValueError(f"Expected column 'Query' in {path}. Found: {list(df.columns)}")
+        raise ValueError(
+            f"Expected column 'Query' in {path}. Found: {list(df.columns)}"
+        )
     # normalise to one-line clean queries
     df["Query"] = df[qcol].astype(str).apply(clean_query_text)
     return df["Query"].tolist()
@@ -103,9 +107,15 @@ def main():
 
     ap = argparse.ArgumentParser()
     ap.add_argument("--mode", required=True, choices=["train", "test"])
-    ap.add_argument("--topk", type=int, default=10, help="max predictions per query (default 10)")
-    ap.add_argument("--in", dest="inp", type=str, default=None, help="optional custom input file")
-    ap.add_argument("--out", dest="out", type=str, default=None, help="optional custom output file")
+    ap.add_argument(
+        "--topk", type=int, default=10, help="max predictions per query (default 10)"
+    )
+    ap.add_argument(
+        "--in", dest="inp", type=str, default=None, help="optional custom input file"
+    )
+    ap.add_argument(
+        "--out", dest="out", type=str, default=None, help="optional custom output file"
+    )
     args = ap.parse_args()
 
     if args.inp:
@@ -116,7 +126,11 @@ def main():
     if args.out:
         out = Path(args.out)
     else:
-        out = Path("artifacts/train_predictions.csv" if args.mode == "train" else "artifacts/test_predictions.csv")
+        out = Path(
+            "artifacts/train_predictions.csv"
+            if args.mode == "train"
+            else "artifacts/test_predictions.csv"
+        )
 
     queries = load_queries(inp)
     print(f"Loaded {len(queries)} queries from {inp}")
@@ -130,7 +144,7 @@ def main():
     for i, uq in enumerate(unique_queries, 1):
         try:
             urls = _predict_for_query(uq)
-            unique_preds[uq] = urls[:args.topk]
+            unique_preds[uq] = urls[: args.topk]
         except Exception as e:
             print(f"[WARN] {i}/{len(unique_queries)} failed: {e}")
             unique_preds[uq] = []
