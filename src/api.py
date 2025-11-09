@@ -2473,12 +2473,12 @@ def _post_rank_adjustments(
 
         # Technical briefs without BI asks should not surface analytics-heavy batteries.
         if (is_dev_query or ai_query) and not has_analytics_terms and any(
-            kw in blob for kw in heavy_analytics_terms
+            kw in name_desc for kw in heavy_analytics_terms
         ):
             score -= 0.18
         # Reward programming-centric families so at least one dev test stays pinned.
         if is_dev_query and any(
-            kw in blob
+            kw in name_desc
             for kw in [
                 "programming",
                 "software developer",
@@ -2489,7 +2489,7 @@ def _post_rank_adjustments(
         ):
             score += 0.10
         if wants_dev_cognitive and any(
-            kw in blob
+            kw in name_desc
             for kw in [
                 "verify numerical ability",
                 "verify verbal ability",
@@ -2502,7 +2502,7 @@ def _post_rank_adjustments(
         ):
             score += 0.08
         if is_dev_query and not explicit_behaviour_request and any(
-            kw in blob
+            kw in name_desc
             for kw in [
                 "occupational personality questionnaire",
                 "personality",
