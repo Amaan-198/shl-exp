@@ -4,6 +4,7 @@ import pandas as pd
 import re
 from typing import List, Set
 from . import config
+from src.eval_utils import canonical_slug
 
 def _norm_col(s: str) -> str:
     return s.strip().lower().replace(" ", "_").replace("-", "_")

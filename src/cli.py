@@ -66,11 +66,11 @@ def _predict_for_query(q: str) -> List[str]:
     """
     Calls the in-process API once and returns canonicalised, deduped URLs
     in rank order (no alphabetical re-sort).
+    NOTE: The pipeline already enforces RESULT_MIN..RESULT_MAX via mapping/dynamic cutoff.
     """
     urls = recommend_single_query(q)
-    urls = canon_urls(urls)
+    urls = canon_urls(urls)  # collapse family aliases deterministically
 
-    # de-dup while preserving order
     unique: List[str] = []
     seen = set()
     for u in urls:

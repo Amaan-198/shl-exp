@@ -1,6 +1,11 @@
 # src/utils/urls.py
 from urllib.parse import urlparse
+from __future__ import annotations
+import re
+from typing import Iterable, List
+from .. import config
 
+_SLUG_RE = re.compile(r"/view/([^/?#]+)")
 __all__ = ["canon_url", "canon_urls"]
 
 
@@ -42,4 +47,26 @@ def canon_url(u: str) -> str:
 def canon_urls(urls):
     return [canon_url(u) for u in (urls or [])]
 
+def _slug(u: str) -> str:
+    if not isinstance(u, str) or not u:
+        return ""
+    u = u.strip().lower()
+    m = _SLUG_RE.search(u)
+    slug = m.group(1) if m else u
+    slug = slug.rstrip("/").replace("%28","(").replace("%29",")").replace("_","-")
+    return config.family_slug(slug)
 
+def canon_urls(urls: Iterable[str]) -> List[str]:
+    """
+    - Normalise by family slug so aliases collapse (…-new, (v2), …).
+    - Preserve first-seen order.
+    """
+    seen_slugs = set()
+    out: List[str] = []
+    for u in urls:
+        s = _slug(u)
+        if not s or s in seen_slugs:
+            continue
+        seen_slugs.add(s)
+        out.append(u)
+    return out

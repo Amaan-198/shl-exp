@@ -1,24 +1,16 @@
-    # src/utils/text_clean.py
+# src/utils/text_clean.py
+from __future__ import annotations
 import re
 
-__all__ = ["clean_query_text"]
-
-def clean_query_text(q: str) -> str:
+def clean_query_text(q: str, max_len: int = 20000) -> str:
     """
-    Flatten multi-line job descriptions into one line and
-    remove redundant whitespace.
-
-    Examples:
-    >>> clean_query_text("About Recro\\n\\nLead marketing")
-    'About Recro Lead marketing'
+    Minimal, safe query normaliser used by batch CLI:
+    - collapse whitespace/newlines
+    - trim
+    - hard cap (defensive)
     """
-    if not q:
-        return ""
-    q = str(q)
-    # collapse multiple whitespace / newlines into a single space
-    q = re.sub(r"\s+", " ", q)
-    # strip leading/trailing spaces
-    q = q.strip()
+    q = "" if q is None else str(q)
+    q = re.sub(r"\s+", " ", q).strip()
+    if len(q) > max_len:
+        q = q[:max_len]
     return q
-
-

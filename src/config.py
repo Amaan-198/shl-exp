@@ -50,7 +50,7 @@ FUSION_WINSORIZE_MAX = 3.0
 FUSION_EPS = 1e-8
 
 # Diversification
-MMR_LAMBDA = 0.45
+MMR_LAMBDA = 0.65
 
 # Result policy
 RESULT_MIN = 5
