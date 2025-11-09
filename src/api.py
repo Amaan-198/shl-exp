@@ -380,7 +380,6 @@ def _collect_must_include_ids(query: str, catalog_df: pd.DataFrame) -> list[int]
             ],
             ["sales-representative-solution", "technical-sales-associate-solution"],
             ["interpersonal-communications"],
-            ["svar-spoken-english-indian-accent"],
             ["business-communication-adaptive"],
         ]
     if is_marketing_mgr:
@@ -620,17 +619,19 @@ def _intent_keys_from_query(query: str) -> list[str]:
         )
     ):
         keys += ["sales_entry"]
-    if _match_any(
-        ql,
-        [
-            "data analyst",
-            "analytics",
-            "business analyst",
-            "tableau",
-            "power bi",
-            "excel ",
-            " sql ",
-        ],
+    if (
+        "analyst" in ql
+        or _match_any(
+            ql,
+            [
+                "analytics",
+                "business analyst",
+                "business intelligence",
+                "tableau",
+                "power bi",
+                "excel ",
+            ],
+        )
     ):
         keys += ["data_analyst"]
     if _match_any(ql, ["java developer", "java "]):
@@ -1727,6 +1728,9 @@ def _post_rank_adjustments(
             ]
         )
     )
+    is_product_manager = ("product manager" in q_lower) or (
+        " product " in q_lower and " manager" in q_lower
+    ) or ("product management" in q_lower)
     is_presales = "presales" in q_lower or "pre-sales" in q_lower
     is_non_tech_role = (
         is_sales_grad
@@ -1737,6 +1741,40 @@ def _post_rank_adjustments(
             k in q_lower
             for k in ["admin", "administrative assistant", "bank administrative"]
         )
+    )
+    pm_allows_dev = is_product_manager and any(
+        k in q_lower for k in ["coding", "developer", "programming", "hands-on", "technical"]
+    )
+    js_in_query = any(
+        term in q_lower
+        for term in ["javascript", "java script", " js ", " nodejs", " front end", "frontend"]
+    )
+    wants_stack_python_sql_js = "python" in q_lower and "sql" in q_lower and js_in_query
+    has_analytics_terms = any(
+        k in q_lower
+        for k in ["tableau", "power bi", "excel", "analytics", "business intelligence", "bi "]
+    )
+    stack_focus_no_analytics = wants_stack_python_sql_js and not has_analytics_terms
+    presales_tool_signal = is_presales and any(
+        k in q_lower
+        for k in [
+            "canva",
+            "adobe",
+            "synthesia",
+            "presentation",
+            "presentations",
+            "proposal",
+            "proposals",
+            "demo",
+            "demos",
+            "pitch",
+            "rfp",
+            "storytelling",
+        ]
+    )
+    presales_allows_dev = is_presales and any(
+        k in q_lower
+        for k in ["developer", "engineering", "coding", "technical", "solution engineer"]
     )
 
     DEV_NOISE = {
@@ -1906,6 +1944,40 @@ def _post_rank_adjustments(
         ):
             score += 0.12
 
+        if stack_focus_no_analytics:
+            if any(
+                kw in name_desc
+                for kw in [
+                    "javascript",
+                    "java script",
+                    "nodejs",
+                    "node.js",
+                    "front end",
+                    "frontend",
+                    "web developer",
+                    "web development",
+                ]
+            ):
+                score += 0.12
+            if any(
+                kw in name_desc
+                for kw in [
+                    "microsoft excel",
+                    "excel 365",
+                    "tableau",
+                    "power bi",
+                    "business intelligence",
+                    "ssas",
+                    "data warehouse",
+                    "data warehousing",
+                ]
+            ):
+                score -= 0.12
+            if "python" in name_desc or "programming concepts" in name_desc:
+                score += 0.06
+            if "sql" in name_desc:
+                score += 0.06
+
         query_domains: set[str] = set()
         for dom, kws in _DOMAIN_FOCUS_KEYWORDS.items():
             if any(k in q_lower for k in kws):
@@ -2036,6 +2108,12 @@ def _post_rank_adjustments(
             ]
         ):
             score += 0.16
+        if (
+            is_sales_grad
+            and not is_contact_centre
+            and "svar spoken english" in name_desc
+        ):
+            score -= 0.10
 
         if any(
             k in q_lower
@@ -2112,6 +2190,45 @@ def _post_rank_adjustments(
                 ]
             ):
                 score -= 0.22
+
+        if is_product_manager:
+            if any(
+                kw in name_desc
+                for kw in [
+                    "agile",
+                    "scrum",
+                    "product management",
+                    "product manager",
+                    "project management",
+                    "stakeholder",
+                    "requirements",
+                    "user story",
+                    "roadmap",
+                    "jira",
+                    "confluence",
+                    "business communication",
+                    "time management",
+                ]
+            ):
+                score += 0.14
+            if not pm_allows_dev and any(
+                kw in name_desc
+                for kw in [
+                    "automata",
+                    "developer",
+                    "programming",
+                    "java",
+                    "python",
+                    "c++",
+                    "c#",
+                    "linux",
+                    "spark",
+                    "hadoop",
+                    "spring",
+                    "hibernate",
+                ]
+            ):
+                score -= 0.14
 
         if is_marketing_mgr:
             if any(
@@ -2204,10 +2321,19 @@ def _post_rank_adjustments(
                     "written english",
                     "writex email writing",
                     "interpersonal communications",
+                    "presentation",
+                    "presentation skills",
+                    "proposal",
+                    "customer presentation",
                 ]
             ):
                 score += 0.14
-            if any(
+            if presales_tool_signal and any(
+                kw in name_desc
+                for kw in ["presentation", "proposal", "demo", "pitch", "storytelling"]
+            ):
+                score += 0.10
+            if (not has_analytics_terms) and any(
                 kw in name_desc
                 for kw in [
                     "data warehousing",
@@ -2221,7 +2347,21 @@ def _post_rank_adjustments(
                     "analytics",
                 ]
             ):
-                score -= 0.12
+                score -= 0.16
+            if (not presales_allows_dev) and any(
+                kw in name_desc
+                for kw in [
+                    "automata",
+                    "developer",
+                    "programming",
+                    "java",
+                    "python",
+                    "linux",
+                    "spark",
+                    "data engineer",
+                ]
+            ):
+                score -= 0.14
             if any(
                 kw in name_desc
                 for kw in [
@@ -2372,6 +2512,7 @@ def _apply_domain_vetoes(
     is_sales_grad = ("sales" in ql) and any(
         k in ql for k in ["entry level", "entry-level", "graduate", "fresher", "0-2"]
     )
+    is_presales = "presales" in ql or "pre-sales" in ql
     is_admin = any(
         k in ql
         for k in [
@@ -2386,8 +2527,22 @@ def _apply_domain_vetoes(
         for k in ["qa", "quality assurance", "selenium", "manual testing", "webdriver"]
     )
     is_fin_ops_analyst = "finance" in ql and "analyst" in ql
+    is_product_manager = ("product manager" in ql) or (
+        " product " in ql and " manager" in ql
+    ) or ("product management" in ql)
+    pm_allows_dev = is_product_manager and any(
+        k in ql for k in ["coding", "developer", "programming", "hands-on", "technical"]
+    )
+    presales_allows_dev = is_presales and any(
+        k in ql for k in ["developer", "engineering", "coding", "technical", "solution engineer"]
+    )
+    presales_mentions_analytics = any(
+        k in ql for k in ["tableau", "power bi", "excel", "analytics", "business intelligence", "bi "]
+    )
 
-    non_tech = is_consultant_io or is_marketing_mgr or is_sales_grad or is_admin
+    non_tech = (
+        is_consultant_io or is_marketing_mgr or is_sales_grad or is_admin or is_presales
+    )
     dev_noise = {
         "java",
         "framework",
@@ -2398,6 +2553,7 @@ def _apply_domain_vetoes(
         "spring",
         "hibernate",
         "salesforce development",
+        "automata",
     }
 
     cleaned: List[ScoredCandidate] = []
@@ -2443,6 +2599,84 @@ def _apply_domain_vetoes(
 
         if is_fin_ops_analyst and any(
             k in blob for k in ["data warehousing", "ssas", "etl", "spark"]
+        ):
+            score -= 0.18
+
+        if is_presales and any(
+            k in blob
+            for k in [
+                "business communication",
+                "written english",
+                "writex",
+                "interpersonal communications",
+                "presentation",
+                "proposal",
+                "demo",
+                "pitch",
+            ]
+        ):
+            score += 0.12
+        if is_presales and (not presales_mentions_analytics) and any(
+            k in blob
+            for k in [
+                "tableau",
+                "microsoft excel",
+                "power bi",
+                "ssas",
+                "data warehouse",
+                "data warehousing",
+            ]
+        ):
+            score -= 0.18
+        if is_presales and (not presales_allows_dev) and any(
+            k in blob
+            for k in [
+                "automata",
+                "developer",
+                "programming",
+                "java",
+                "python",
+                "spark",
+                "data engineer",
+                "sql server programming",
+            ]
+        ):
+            score -= 0.18
+
+        if is_product_manager and any(
+            k in blob
+            for k in [
+                "agile",
+                "scrum",
+                "product management",
+                "product manager",
+                "project management",
+                "stakeholder",
+                "requirements",
+                "user story",
+                "roadmap",
+                "jira",
+                "confluence",
+                "business communication",
+            ]
+        ):
+            score += 0.12
+        if is_product_manager and (not pm_allows_dev) and any(
+            k in blob
+            for k in [
+                "automata",
+                "developer",
+                "programming",
+                "java",
+                "python",
+                "c++",
+                "c#",
+                "linux",
+                "spark",
+                "hadoop",
+                "spring",
+                "hibernate",
+            ]
         ):
             score -= 0.18
 
