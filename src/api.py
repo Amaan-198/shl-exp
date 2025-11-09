@@ -243,6 +243,68 @@ def _is_dev_query(q: str) -> bool:
     return _is_dev_query_impl(q)
 
 
+def _is_dev_query(q: str) -> bool:
+    """Detect broad software-development asks without overfitting to a single stack."""
+
+    ql = q.lower()
+    if not ql.strip():
+        return False
+
+    direct_hits = [
+        "software developer",
+        "software engineer",
+        "software development",
+        "software dev",
+        "full stack developer",
+        "full-stack developer",
+        "full stack engineer",
+        "full-stack engineer",
+        "frontend developer",
+        "front-end developer",
+        "backend developer",
+        "back-end developer",
+        "web developer",
+        "application developer",
+        "applications developer",
+        "mobile developer",
+        "android developer",
+        "ios developer",
+        "devops engineer",
+    ]
+    if any(term in ql for term in direct_hits):
+        return True
+
+    if "developer" in ql:
+        if any(
+            ctx in ql
+            for ctx in [
+                "software",
+                "application",
+                "product",
+                "full stack",
+                "full-stack",
+                "frontend",
+                "front-end",
+                "backend",
+                "back-end",
+                "web",
+                "mobile",
+                "cloud",
+                "devops",
+                "engineering",
+                "technology",
+                "tech",
+            ]
+        ):
+            return True
+
+    if any(token in ql for token in ["programmer", "coding", "programming", "software cod"]):
+        if any(ctx in ql for ctx in ["software", "developer", "engineer", "technology", "tech"]):
+            return True
+
+    return False
+
+
 def _collect_must_include_ids(query: str, catalog_df: pd.DataFrame) -> list[int]:
     """
     Build a small 'must include' set of canonical families per intent (looked up by slug).
