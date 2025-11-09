@@ -38,7 +38,32 @@ from .config import (
     RETRIEVAL_BOOST_SEEDS,
     EXPANSION_LIBRARY,
     COMMUNICATION_TRIGGER_PHRASES,  # imported for future use
+    INTENT_KEY_ALIASES,
+    TECH_KEYWORDS,
 )
+from .constants import (
+    ADMIN_TERMS,
+    AI_RESEARCH_TERMS,
+    CUSTOMER_SUPPORT_TERMS_CORE,
+    CUSTOMER_SUPPORT_TERMS_EXTENDED,
+    DATA_ANALYST_INTENT_TERMS,
+    DATA_ANALYST_PIN_TERMS,
+    MARKETING_MANAGER_CONTEXT_TERMS,
+    QA_TERMS,
+    SALES_ENTRY_LEVEL_TERMS,
+    WRITER_SEO_TERMS,
+)
+from .intent_utils import (
+    _intent_keys_from_query as _intent_keys_from_query_impl,
+    _limit_intent_keys as _limit_intent_keys_impl,
+    _is_dev_query as _is_dev_query_impl,
+    _is_exec_culture_query as _is_exec_culture_query_impl,
+)
+
+_is_exec_culture_query = _is_exec_culture_query_impl
+_is_dev_query = _is_dev_query_impl
+_intent_keys_from_query = _intent_keys_from_query_impl
+_limit_intent_keys = _limit_intent_keys_impl
 
 # optional transformers --------------------------------------------------------
 try:
@@ -207,51 +232,15 @@ def _find_ids_by_slugs(
 
 
 def _is_exec_culture_query(q: str) -> bool:
-    """
-    Return True only when the query is genuinely about senior/executive leadership
-    and/or cultural fit at that level. Avoid firing just because of 'customer support executives'.
-    """
-    ql = q.lower()
-    qpad = f" {ql} "
+    """Delegate to the shared intent helper for exec/culture detection."""
 
-    # Hard C-suite / senior markers
-    if any(
-        k in ql
-        for k in [
-            "coo",
-            "chief operating officer",
-            "c-suite",
-            "cxo",
-            "chief executive officer",
-            "ceo",
-            "cfo",
-            "cto",
-            "vp ",
-            "vice president",
-            "senior leadership",
-            "executive leadership",
-        ]
-    ):
-        return True
+    return _is_exec_culture_query_impl(q)
 
-    # Generic "executive" but only when paired with culture/leadership language
-    if " executive " in qpad:
-        if any(
-            k in ql
-            for k in [
-                "culture fit",
-                "cultural fit",
-                "values fit",
-                "leadership",
-                "senior leader",
-                "people leader",
-                "right fit for our culture",
-                "executive role",
-            ]
-        ):
-            return True
 
-    return False
+def _is_dev_query(q: str) -> bool:
+    """Delegate to the shared intent helper for broad developer detection."""
+
+    return _is_dev_query_impl(q)
 
 
 def _is_dev_query(q: str) -> bool:
@@ -329,42 +318,15 @@ def _collect_must_include_ids(query: str, catalog_df: pd.DataFrame) -> list[int]
     is_java = ("java" in q) and any(k in q for k in ["developer", "engineer"])
     is_dev_generic = _is_dev_query(query)
     wants_40 = ("40" in q and "min" in q) or "40 minutes" in q
-    is_qa = any(
-        k in q
-        for k in [
-            "qa",
-            "quality assurance",
-            "selenium",
-            "manual testing",
-            "webdriver",
-            "test case",
-        ]
-    )
-    is_admin = any(
-        k in q
-        for k in [
-            "assistant admin",
-            "administrative assistant",
-            "bank admin",
-            "bank administrative",
-        ]
-    )
-    is_sales_grad = ("sales" in q) and any(
-        k in q for k in ["entry level", "entry-level", "graduate", "fresher", "0-2"]
-    )
+    is_qa = any(k in q for k in QA_TERMS)
+    is_admin = any(k in q for k in ADMIN_TERMS)
+    is_sales_grad = ("sales" in q) and any(k in q for k in SALES_ENTRY_LEVEL_TERMS)
     # STRICTER: don't let 'community' trigger marketing manager by itself
     is_marketing_mgr = ("marketing manager" in q) or (
-        "marketing" in q
-        and any(
-            k in q for k in ["brand", "campaign", "demand generation", "seo", "content"]
-        )
+        "marketing" in q and any(k in q for k in MARKETING_MANAGER_CONTEXT_TERMS)
     )
-    is_writer_seo = any(
-        k in q for k in ["content writer", "content writing", "copywriter", "seo"]
-    )
-    is_data_analyst = ("data analyst" in q) or any(
-        k in q for k in [" sql ", " excel ", " tableau ", " power bi ", " analytics "]
-    )
+    is_writer_seo = any(k in q for k in WRITER_SEO_TERMS)
+    is_data_analyst = ("data analyst" in q) or any(k in q for k in DATA_ANALYST_INTENT_TERMS)
     is_consultant_io = ("consultant" in q) and any(
         k in q
         for k in [
@@ -380,28 +342,9 @@ def _collect_must_include_ids(query: str, catalog_df: pd.DataFrame) -> list[int]
     is_product_manager = ("product manager" in q) or (
         " product " in q and " manager " in q
     )
-    is_customer_support = any(
-        k in q
-        for k in [
-            "customer support",
-            "customer service",
-            "call center",
-            "contact center",
-        ]
-    )
+    is_customer_support = any(k in q for k in CUSTOMER_SUPPORT_TERMS_CORE)
     is_finance_analyst = "finance" in q and "analyst" in q
-    is_ai_research = any(
-        k in q
-        for k in [
-            " ai ",
-            " artificial intelligence",
-            "machine learning",
-            " ml ",
-            "research engineer",
-            " llm ",
-            " rag ",
-        ]
-    )
+    is_ai_research = any(k in q for k in AI_RESEARCH_TERMS)
 
     must_slug_packs: list[list[str]] = []
 
@@ -632,317 +575,15 @@ def _duration_adjust(score: float, duration_min: float, q: str) -> float:
 
 
 def _intent_keys_from_query(query: str) -> list[str]:
-    """
-    Map the raw query into small intent keys that drive seed injection.
-    (Tightened marketing trigger; added explicit keys for aptitude/behavior,
-    entry-level sales, product manager, customer support, finance analyst, AI research.)
-    """
+    """Delegate to the shared intent helper for intent key extraction."""
 
-    def _match_any(ql: str, keys: list[str]) -> bool:
-        return any(k in ql for k in keys)
-
-    ql = query.lower()
-    keys: list[str] = []
-
-    # Existing buckets
-    if _match_any(
-        ql,
-        [
-            "consultant",
-            "i/o",
-            "industrial/organizational",
-            "psychometric",
-            "people science",
-        ],
-    ):
-        keys += ["consultant", "industrial organizational", "behavior", "aptitude"]
-    if _match_any(
-        ql, ["qa engineer", "qa ", "quality assurance", "testing", "selenium"]
-    ):
-        keys += ["qa engineer", "quality assurance", "qa_testing"]
-    if _match_any(
-        ql, ["assistant admin", "administrative assistant", "bank admin", "data entry"]
-    ):
-        keys += ["admin_ops"]
-    if _match_any(
-        ql, ["content writer", "content writing", "copywriter", "seo", "email writing"]
-    ):
-        keys += ["content_marketing"]
-    # STRICTER marketing manager (don't key on "community" alone)
-    if ("marketing manager" in ql) or (
-        "marketing" in ql
-        and any(
-            k in ql
-            for k in ["brand", "campaign", "demand generation", "seo", "content"]
-        )
-    ):
-        keys += ["marketing manager", "marketing_mgr", "marketing"]
-    if _match_any(
-        ql, ["entry level sales", "sales associate", "spoken english", "svar"]
-    ) or (
-        "sales" in ql
-        and any(
-            k in ql
-            for k in ["entry level", "entry-level", "graduate", "fresher", "0-2"]
-        )
-    ):
-        keys += ["sales_entry"]
-    if (
-        "analyst" in ql
-        or _match_any(
-            ql,
-            [
-                "analytics",
-                "business analyst",
-                "business intelligence",
-                "tableau",
-                "power bi",
-                "excel ",
-            ],
-        )
-    ):
-        keys += ["data_analyst"]
-    if _match_any(ql, ["java developer", "java "]):
-        keys += ["java_dev"]
-    if _match_any(
-        ql,
-        [
-            "software developer",
-            "software engineer",
-            "software development",
-            "fullstack developer",
-            "full stack developer",
-        ],
-    ):
-        keys += ["java_dev"]
-    if _match_any(
-        ql,
-        [
-            "coo",
-            "chief operating officer",
-            "culture fit",
-            "culturally",
-            "values fit",
-            "personality",
-            "behavioral",
-            "behavioural",
-        ],
-    ):
-        keys += ["behavior"]
-
-    # NEW keys / triggers
-    if _is_dev_query(query):
-        keys += ["dev_generic"]
-    if any(
-        k in ql
-        for k in [
-            "cognitive",
-            "aptitude",
-            "reasoning",
-            "verbal ability",
-            "numerical ability",
-            "inductive",
-            "iq",
-        ]
-    ):
-        keys += ["aptitude"]
-    if any(
-        k in ql
-        for k in [
-            "personality",
-            "culture fit",
-            "values fit",
-            "behavioral",
-            "behavioural",
-        ]
-    ):
-        keys += ["behavior"]
-    if ("product manager" in ql) or (" product " in ql and " manager " in ql):
-        keys += ["product_manager"]
-    if any(
-        k in ql
-        for k in [
-            "customer support",
-            "customer service",
-            "call center",
-            "contact center",
-        ]
-    ):
-        keys += ["customer_support"]
-    if "finance" in ql and "analyst" in ql:
-        keys += ["finance_analyst"]
-    if any(
-        k in ql
-        for k in [
-            " ai ",
-            " artificial intelligence",
-            "machine learning",
-            " ml ",
-            "research engineer",
-            " llm",
-            " rag ",
-        ]
-    ):
-        keys += ["ai_research_eng", "data_analyst"]  # allow technical pull too
-
-    keys = list(dict.fromkeys(keys))
-    return _limit_intent_keys(keys, query)
+    return _intent_keys_from_query_impl(query)
 
 
 def _limit_intent_keys(keys: list[str], query: str) -> list[str]:
-    """
-    For very long JDs, keep only the top 1–2 strongest archetype keys to avoid over-broad seed injection.
-    For shorter queries, allow up to 3 archetypes so multi-skill roles are covered.
-    """
-    if not keys:
-        return keys
-    ql = query.lower()
+    """Delegate to the shared intent helper for key clamping."""
 
-    archetype_groups: dict[str, list[str]] = {
-        "java_dev": ["java", "developer", "engineer"],
-        "dev_generic": [
-            "software developer",
-            "software engineer",
-            "programmer",
-            "coding",
-            "programming",
-        ],
-        "qa engineer": [
-            "qa engineer",
-            "qa ",
-            "quality assurance",
-            "selenium",
-            "testing",
-        ],
-        "quality assurance": ["quality assurance", "qa ", "testing"],
-        "qa_testing": ["qa", "testing", "selenium"],
-        "data_analyst": ["data analyst", "analytics", "sql", "excel", "tableau", "bi"],
-        "marketing manager": [
-            "marketing manager",
-            "brand",
-            "campaign",
-            "demand generation",
-            "seo",
-            "content",
-        ],
-        "marketing_mgr": [
-            "marketing",
-            "brand",
-            "campaign",
-            "demand generation",
-            "seo",
-            "content",
-        ],
-        "marketing": [
-            "marketing",
-            "brand",
-            "campaign",
-            "demand generation",
-            "seo",
-            "content",
-        ],
-        "content_marketing": [
-            "content writer",
-            "content writing",
-            "copywriter",
-            "seo",
-            "email writing",
-        ],
-        "admin_ops": [
-            "assistant admin",
-            "administrative assistant",
-            "bank admin",
-            "data entry",
-        ],
-        "sales_entry": [
-            "entry level sales",
-            "sales role",
-            "sales associate",
-            "spoken english",
-            "svar",
-        ],
-        "consultant": [
-            "consultant",
-            "industrial",
-            "psychometric",
-            "talent assessment",
-            "job analysis",
-        ],
-        "industrial organizational": [
-            "industrial/organizational",
-            "industrial organizational",
-            "i/o",
-        ],
-        "behavior": [
-            "culture fit",
-            "cultural fit",
-            "values fit",
-            "leadership",
-            "personality",
-            "behavior",
-        ],
-        "aptitude": [
-            "numerical",
-            "verbal",
-            "inductive",
-            "reasoning",
-            "aptitude",
-            "cognitive",
-            "iq",
-        ],
-        "product_manager": [
-            "product manager",
-            "jira",
-            "confluence",
-            "sdlc",
-            "agile",
-            "scrum",
-        ],
-        "customer_support": [
-            "customer support",
-            "customer service",
-            "contact center",
-            "call center",
-            "spoken english",
-        ],
-        "finance_analyst": [
-            "finance",
-            "analyst",
-            "excel",
-            "kpi",
-            "forecast",
-            "budget",
-            "numerical",
-        ],
-        "ai_research_eng": [
-            "ai",
-            "artificial intelligence",
-            "machine learning",
-            "ml",
-            "llm",
-            "rag",
-            "research engineer",
-        ],
-    }
-
-    scores: dict[str, int] = {}
-    for k, toks in archetype_groups.items():
-        scores[k] = sum(1 for tok in toks if tok in ql)
-
-    dedup = list(dict.fromkeys(keys))
-    if len(dedup) <= 2:
-        return dedup
-
-    length = len(ql)
-    if length >= 1600:
-        max_keys = 2
-    elif length >= 800:
-        max_keys = 3
-    else:
-        max_keys = 3
-
-    dedup.sort(key=lambda k: scores.get(k, 0), reverse=True)
-    return dedup[:max_keys]
+    return _limit_intent_keys_impl(keys, query)
 
 
 @dataclass
@@ -964,8 +605,9 @@ def _inject_seed_candidates(
 
     wanted_phrases: list[str] = []
     for key in _intent_keys_from_query(query):
-        wanted_phrases += RETRIEVAL_BOOST_SEEDS.get(key, [])
-        wanted_phrases += EXPANSION_LIBRARY.get(key, [])
+        canonical = INTENT_KEY_ALIASES.get(key, key)
+        wanted_phrases += RETRIEVAL_BOOST_SEEDS.get(canonical, [])
+        wanted_phrases += EXPANSION_LIBRARY.get(canonical, [])
     wanted_norm = {_normalize(w) for w in wanted_phrases if w}
 
     have = {c.item_id for c in ranked}
@@ -1021,40 +663,18 @@ def _pinned_names_for_query(q: str) -> list[list[str]]:
     is_java = ("java" in ql) and any(k in ql for k in ["developer", "engineer"])
     is_dev_generic = _is_dev_query(q)
     wants_40 = ("40" in ql and "min" in ql) or "40 minutes" in ql
-    is_qa = any(
-        k in ql
-        for k in [
-            "qa",
-            "quality assurance",
-            "selenium",
-            "manual testing",
-            "test case",
-            "webdriver",
-        ]
-    )
-    is_admin = any(
-        k in ql for k in ["assistant admin", "administrative assistant", "bank admin"]
-    )
+    is_qa = any(k in ql for k in QA_TERMS)
+    is_admin = any(k in ql for k in ADMIN_TERMS)
     wants_30_40 = any(k in ql for k in ["30-40", "30 – 40", "30 to 40"]) or (
         "30" in ql and "40" in ql and "min" in ql
     )
-    is_sales_grad = ("sales" in ql) and any(
-        k in ql for k in ["entry level", "entry-level", "graduate", "fresher", "0-2"]
-    )
+    is_sales_grad = ("sales" in ql) and any(k in ql for k in SALES_ENTRY_LEVEL_TERMS)
     # STRICTER: avoid "community" alone
     is_marketing_mgr = ("marketing manager" in ql) or (
-        "marketing" in ql
-        and any(
-            k in ql
-            for k in ["brand", "campaign", "demand generation", "seo", "content"]
-        )
+        "marketing" in ql and any(k in ql for k in MARKETING_MANAGER_CONTEXT_TERMS)
     )
-    is_writer_seo = any(
-        k in ql for k in ["content writer", "content writing", "copywriter", "seo"]
-    )
-    is_data_analyst = ("data analyst" in ql) or any(
-        k in ql for k in ["sql", "excel", "tableau", "python"]
-    )
+    is_writer_seo = any(k in ql for k in WRITER_SEO_TERMS)
+    is_data_analyst = ("data analyst" in ql) or any(k in ql for k in DATA_ANALYST_PIN_TERMS)
 
     pinned: list[list[str]] = []
 
@@ -1204,48 +824,7 @@ def _normalize_basename(name: str) -> str:
     return base
 
 
-_TECH_KEYWORDS = [
-    "software",
-    "developer",
-    "developers",
-    "programmer",
-    "coder",
-    "engineer",
-    "engineers",
-    "engineering",
-    "technician",
-    "technology",
-    "technical",
-    "coding",
-    "programming",
-    "devops",
-    "backend",
-    "front-end",
-    "frontend",
-    "fullstack",
-    "full-stack",
-    "python",
-    "java",
-    ".net",
-    "c#",
-    "c++",
-    "javascript",
-    "machine learning",
-    "ml",
-    "neural network",
-    "neural_network",
-    "deep learning",
-    "data engineer",
-    "data-engineer",
-    "sql",
-    "excel",
-    "tableau",
-    "power bi",
-    "power-bi",
-    "bi",
-    "data warehouse",
-    "data warehousing",
-]
+_TECH_KEYWORDS = list(TECH_KEYWORDS)
 _TECH_ALLOWED_TYPES = {"Knowledge & Skills", "Ability & Aptitude"}
 _GENERIC_PATTERNS = [
     "multitasking ability",
@@ -1782,17 +1361,7 @@ def _post_rank_adjustments(
         ]
     )
     is_sales_grad = ("sales" in q_lower) and role == "grad"
-    is_customer_support = any(
-        k in q_lower
-        for k in [
-            "customer support",
-            "customer service",
-            "call center",
-            "contact center",
-            "voice process",
-            "international call center",
-        ]
-    )
+    is_customer_support = any(k in q_lower for k in CUSTOMER_SUPPORT_TERMS_EXTENDED)
     is_analyst = any(
         k in q_lower
         for k in [
@@ -1974,16 +1543,7 @@ def _post_rank_adjustments(
     # Customer support / call-center
     is_contact_centre = any(
         k in q_lower
-        for k in [
-            "customer support",
-            "customer service",
-            "contact center",
-            "contact centre",
-            "call center",
-            "call centre",
-            "bpo",
-            "voice process",
-        ]
+        for k in (CUSTOMER_SUPPORT_TERMS_EXTENDED + ["contact centre", "call centre", "bpo"])
     )
 
     adjusted: List[ScoredCandidate] = []
@@ -2335,15 +1895,7 @@ def _post_rank_adjustments(
             if not is_contact_centre and sales_spoken_count > 1:
                 score -= 0.12
 
-        if any(
-            k in q_lower
-            for k in [
-                "admin",
-                "administrative assistant",
-                "assistant admin",
-                "bank administrative",
-            ]
-        ):
+        if any(k in q_lower for k in ADMIN_TERMS + ["admin"]):
             if any(
                 kw in name_desc
                 for kw in [
@@ -2781,34 +2333,11 @@ def _apply_domain_vetoes(
     is_marketing_mgr = ("marketing manager" in ql) or (
         ("marketing" in ql) and ("brand" in ql)
     )
-    is_sales_grad = ("sales" in ql) and any(
-        k in ql for k in ["entry level", "entry-level", "graduate", "fresher", "0-2"]
-    )
-    is_customer_support = any(
-        k in ql
-        for k in [
-            "customer support",
-            "customer service",
-            "call center",
-            "contact center",
-            "voice process",
-            "international call center",
-        ]
-    )
+    is_sales_grad = ("sales" in ql) and any(k in ql for k in SALES_ENTRY_LEVEL_TERMS)
+    is_customer_support = any(k in ql for k in CUSTOMER_SUPPORT_TERMS_EXTENDED)
     is_presales = "presales" in ql or "pre-sales" in ql
-    is_admin = any(
-        k in ql
-        for k in [
-            "administrative assistant",
-            "assistant admin",
-            "bank admin",
-            "bank administrative",
-        ]
-    )
-    is_qa = any(
-        k in ql
-        for k in ["qa", "quality assurance", "selenium", "manual testing", "webdriver"]
-    )
+    is_admin = any(k in ql for k in ADMIN_TERMS)
+    is_qa = any(k in ql for k in QA_TERMS)
     is_fin_ops_analyst = "finance" in ql and "analyst" in ql
     is_product_manager = ("product manager" in ql) or (
         " product " in ql and " manager" in ql
@@ -2927,84 +2456,6 @@ def _apply_domain_vetoes(
             k in blob for k in ["data warehousing", "ssas", "etl", "spark"]
         ):
             score -= 0.25
-
-        if is_presales and any(
-            k in blob
-            for k in [
-                "business communication",
-                "written english",
-                "writex",
-                "interpersonal communications",
-                "presentation",
-                "proposal",
-                "demo",
-                "pitch",
-            ]
-        ):
-            score += 0.12
-        if is_presales and (not presales_mentions_analytics) and any(
-            k in blob
-            for k in [
-                "tableau",
-                "microsoft excel",
-                "power bi",
-                "ssas",
-                "data warehouse",
-                "data warehousing",
-            ]
-        ):
-            score -= 0.18
-        if is_presales and (not presales_allows_dev) and any(
-            k in blob
-            for k in [
-                "automata",
-                "developer",
-                "programming",
-                "java",
-                "python",
-                "spark",
-                "data engineer",
-                "sql server programming",
-            ]
-        ):
-            score -= 0.18
-
-        if is_product_manager and any(
-            k in blob
-            for k in [
-                "agile",
-                "scrum",
-                "product management",
-                "product manager",
-                "project management",
-                "stakeholder",
-                "requirements",
-                "user story",
-                "roadmap",
-                "jira",
-                "confluence",
-                "business communication",
-            ]
-        ):
-            score += 0.12
-        if is_product_manager and (not pm_allows_dev) and any(
-            k in blob
-            for k in [
-                "automata",
-                "developer",
-                "programming",
-                "java",
-                "python",
-                "c++",
-                "c#",
-                "linux",
-                "spark",
-                "hadoop",
-                "spring",
-                "hibernate",
-            ]
-        ):
-            score -= 0.18
 
         if is_presales and any(
             k in blob
