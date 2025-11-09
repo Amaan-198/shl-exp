@@ -538,6 +538,13 @@ RETRIEVAL_BOOST_SEEDS: Dict[str, List[str]] = {
         "java 8",
         "interpersonal communications",
     ],
+    "dev_generic": [
+        "programming concepts",
+        "core java entry level",
+        "core java advanced level",
+        "software developer",
+        "software engineer",
+    ],
     "content_marketing": [
         "search engine optimization",
         "written english",
@@ -607,6 +614,12 @@ EXPANSION_LIBRARY: Dict[str, List[str]] = {
         "core java advanced level new",
         "java 8 new",
         "interpersonal communications",
+    ],
+    "dev_generic": [
+        "programming concepts",
+        "programming concepts new",
+        "core java entry level",
+        "core java entry level new",
     ],
     "content_marketing": [
         "search engine optimization new",
