@@ -3006,6 +3006,84 @@ def _apply_domain_vetoes(
         ):
             score -= 0.18
 
+        if is_presales and any(
+            k in blob
+            for k in [
+                "business communication",
+                "written english",
+                "writex",
+                "interpersonal communications",
+                "presentation",
+                "proposal",
+                "demo",
+                "pitch",
+            ]
+        ):
+            score += 0.12
+        if is_presales and (not presales_mentions_analytics) and any(
+            k in blob
+            for k in [
+                "tableau",
+                "microsoft excel",
+                "power bi",
+                "ssas",
+                "data warehouse",
+                "data warehousing",
+            ]
+        ):
+            score -= 0.18
+        if is_presales and (not presales_allows_dev) and any(
+            k in blob
+            for k in [
+                "automata",
+                "developer",
+                "programming",
+                "java",
+                "python",
+                "spark",
+                "data engineer",
+                "sql server programming",
+            ]
+        ):
+            score -= 0.18
+
+        if is_product_manager and any(
+            k in blob
+            for k in [
+                "agile",
+                "scrum",
+                "product management",
+                "product manager",
+                "project management",
+                "stakeholder",
+                "requirements",
+                "user story",
+                "roadmap",
+                "jira",
+                "confluence",
+                "business communication",
+            ]
+        ):
+            score += 0.12
+        if is_product_manager and (not pm_allows_dev) and any(
+            k in blob
+            for k in [
+                "automata",
+                "developer",
+                "programming",
+                "java",
+                "python",
+                "c++",
+                "c#",
+                "linux",
+                "spark",
+                "hadoop",
+                "spring",
+                "hibernate",
+            ]
+        ):
+            score -= 0.18
+
         cleaned.append(
             ScoredCandidate(
                 item_id=c.item_id, fused_score=c.fused_score, rerank_score=score
