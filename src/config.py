@@ -397,6 +397,13 @@ DOMAIN_MARKERS = _DOMAIN_MARKERS  # public alias
 # -----------------------------------------------------------------------------
 # Major retrieval boosts (extended)
 # -----------------------------------------------------------------------------
+MARKETING_MANAGER_SEED_ITEMS = [
+    "digital advertising",
+    "writex email writing sales",
+    "business communication",
+    "manager 8.0",
+]
+
 RETRIEVAL_BOOST_SEEDS: Dict[str, List[str]] = {
     # personality / leadership staples
     "opq": [
@@ -479,12 +486,7 @@ RETRIEVAL_BOOST_SEEDS: Dict[str, List[str]] = {
         "css3",
     ],
     # Marketing / Brand / Community / Events
-    "marketing manager": [
-        "digital advertising",
-        "writex email writing sales",
-        "business communication",
-        "manager 8.0",
-    ],
+    "marketing_manager": MARKETING_MANAGER_SEED_ITEMS,
     "brand": ["digital advertising", "marketing", "business communication"],
     "community": [
         "digital advertising",
@@ -538,6 +540,13 @@ RETRIEVAL_BOOST_SEEDS: Dict[str, List[str]] = {
         "java 8",
         "interpersonal communications",
     ],
+    "dev_generic": [
+        "programming concepts",
+        "core java entry level",
+        "core java advanced level",
+        "software developer",
+        "software engineer",
+    ],
     "content_marketing": [
         "search engine optimization",
         "written english",
@@ -563,6 +572,18 @@ RETRIEVAL_BOOST_SEEDS: Dict[str, List[str]] = {
 # -----------------------------------------------------------------------------
 # Focused expansion library for exact families (extended)
 # -----------------------------------------------------------------------------
+MARKETING_MANAGER_EXPANSION_ITEMS = [
+    "digital advertising",
+    "writex email writing sales",
+    "business communication adaptive",
+    "manager 8.0 jfa 4310",
+]
+
+INTENT_KEY_ALIASES: Dict[str, str] = {
+    "marketing manager": "marketing_manager",
+    "marketing_mgr": "marketing_manager",
+}
+
 EXPANSION_LIBRARY: Dict[str, List[str]] = {
     "behavior": [
         "opq",
@@ -608,6 +629,12 @@ EXPANSION_LIBRARY: Dict[str, List[str]] = {
         "java 8 new",
         "interpersonal communications",
     ],
+    "dev_generic": [
+        "programming concepts",
+        "programming concepts new",
+        "core java entry level",
+        "core java entry level new",
+    ],
     "content_marketing": [
         "search engine optimization new",
         "written english v1",
@@ -628,12 +655,7 @@ EXPANSION_LIBRARY: Dict[str, List[str]] = {
         "verify numerical ability",
         "professional 7.1 solution",
     ],
-    "marketing_mgr": [
-        "digital advertising",
-        "writex email writing sales",
-        "business communication adaptive",
-        "manager 8.0 jfa 4310",
-    ],
+    "marketing_manager": MARKETING_MANAGER_EXPANSION_ITEMS,
     # --- NEW buckets aligned to api.py ---
     "product_manager": [
         "agile",
@@ -738,6 +760,8 @@ COMMUNICATION_TRIGGER_PHRASES += [
     "presentation",
     "storytelling",
 ]
+
+TECH_KEYWORDS = tuple(_TECH_KEYWORDS)
 
 # -----------------------------------------------------------------------------
 # HTTP hardening (used by jd_fetch)
