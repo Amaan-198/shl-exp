@@ -7,6 +7,7 @@ schemas (AssessmentItem / RecommendResponse) and applies global result-size
 policy consistently.
 """
 
+import re
 from typing import Iterable, List, Sequence, Dict, Any
 
 try:
@@ -26,6 +27,27 @@ import pandas as pd  # type: ignore
 import numpy as np
 
 from .config import AssessmentItem, RecommendResponse, RESULT_MIN, RESULT_MAX
+
+CATALOG_URL_BASE = "https://www.shl.com/solutions/products/product-catalog/view/"
+
+
+def _extract_catalog_slug(url: str) -> str:
+    """Return the slug portion of a catalog URL, best-effort."""
+    if not isinstance(url, str) or not url:
+        return ""
+    match = re.search(r"/view/([^/?#]+)", url)
+    slug = match.group(1) if match else url.rstrip("/").split("/")[-1]
+    return slug.strip("/")
+
+
+def _normalise_catalog_url(url: str) -> str:
+    """Ensure catalog URLs share the /solutions/products/... base path."""
+    if not isinstance(url, str) or not url:
+        return ""
+    slug = _extract_catalog_slug(url)
+    if not slug:
+        return CATALOG_URL_BASE
+    return f"{CATALOG_URL_BASE}{slug.strip('/')}/"
 
 
 def _ensure_iterable_ids(item_ids: Iterable[int]) -> List[int]:
@@ -67,7 +89,7 @@ def _build_assessment_item(row: pd.Series) -> AssessmentItem:
       - "a, b, c" -> ["a","b","c"]
       - list/tuple/np.ndarray -> list[str]
     """
-    url = str(row.get("url", "") or "").strip()
+    url = _normalise_catalog_url(row.get("url", ""))
     name = str(row.get("name", "") or "").strip()
     desc = str(row.get("description", "") or "").strip()
 

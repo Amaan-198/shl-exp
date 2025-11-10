@@ -111,6 +111,17 @@ from .balance import allocate
 from .mapping import map_items_to_response
 from .jd_fetch import fetch_and_extract
 
+
+# =============================================================================
+# Feature flags / environment toggles
+# =============================================================================
+
+CANONICALIZE_URLS_FOR_EVAL = os.getenv("SHL_CANONICALIZE_URLS_FOR_EVAL", "").strip().lower() in {
+    "1",
+    "true",
+    "yes",
+}
+
 # =============================================================================
 # Family / slug helpers
 # =============================================================================
@@ -2854,13 +2865,15 @@ def run_full_pipeline(
     if len(response.recommended_assessments) > RESULT_MAX:
         response.recommended_assessments = response.recommended_assessments[:RESULT_MAX]
 
-    # Canonicalise URLs for eval (alias collapsing)
-    for item in response.recommended_assessments:
-        try:
-            if getattr(item, "url", None):
-                item.url = _canonicalize_slug_for_eval(item.url)
-        except Exception:
-            continue
+    if CANONICALIZE_URLS_FOR_EVAL:
+        # Canonicalise URLs for eval (alias collapsing). Guarded by feature flag so
+        # production responses retain the original catalog URLs.
+        for item in response.recommended_assessments:
+            try:
+                if getattr(item, "url", None):
+                    item.url = _canonicalize_slug_for_eval(item.url)
+            except Exception:
+                continue
 
     return response
 
